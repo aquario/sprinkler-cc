@@ -1,3 +1,6 @@
+#ifndef DMALLOC_H_
+#define DMALLOC_H_
+
 // #define MALLOC_DEBUG
 
 #ifdef MALLOC_DEBUG
@@ -12,7 +15,7 @@ void *dm_calloc(int n, int size, char *file, int line);
 void *dm_realloc(void *data, int size, char *file, int line);
 void dm_free(void *data, char *file, int line);
 
-#else /* MALLOC_DEBUG */
+#else // MALLOC_DEBUG
 
 #ifdef PROFILING
 
@@ -26,13 +29,15 @@ void do_free(void *data);
 #define drealloc(d, s)	do_realloc(d, s)
 #define dfree(d)		do_free(d)
 
-#else /* PROFILING */
+#else // PROFILING
 
 #define dmalloc(s)		malloc(s)
 #define dcalloc(n, s)	calloc(n, s)
 #define drealloc(d, s)	realloc(d, s)
 #define dfree(d)		free(d)
 
-#endif /* PROFILING */
+#endif  // PROFILING
 
-#endif /* MALLOC_DEBUG */
+#endif  // MALLOC_DEBUG
+
+#endif  // DMALLOC_H_
