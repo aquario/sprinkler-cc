@@ -1,4 +1,4 @@
-#include "layer1.h"
+#include "transport_layer.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -96,7 +96,7 @@ private struct l1_socket *l1_socket_add(struct l1_global *l1, int skt,
   return ls;
 }
 
-// The first call into layer1.  Specifies the id of the proxy.
+// The first call into transport_layer.  Specifies the id of the proxy.
 struct l1_global *l1_init(int id,
     void (*outgoing)(struct l1_global *, struct l1_socket *),
     void (*deliver)(struct l1_global *, struct l1_socket *,

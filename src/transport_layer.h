@@ -1,5 +1,5 @@
-#ifndef LAYER1_H_
-#define LAYER1_H_
+#ifndef TRANSPORT_LAYER_H_
+#define TRANSPORT_LAYER_H_
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -117,4 +117,4 @@ void l1_send(struct l1_global *l1, struct l1_socket *ls,
     const char *bytes, unsigned int len,
     void (*upcall)(void *env), void *env);
 
-#endif  // LAYER1_H_
+#endif  // TRANSPORT_LAYER_H_
