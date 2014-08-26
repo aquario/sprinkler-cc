@@ -12,89 +12,180 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <list>
+#include <string>
+
+#include "dmalloc.h"
+
 #define MAX_CHUNK_SIZE (32 * 1024)
 
 // TODO(haoyan): add EPOLL support if necessary.
 
+struct Chunk;
+struct SocketAddr;
+struct SprinklerSocket;
+
 // Connection manager that manages all the socket connections.
 // One per Sprinkler node.
-struct cmgr {
+class TransportLayer {
+ public:
+  // Constructor that specifies the id of this Sprinkler node, and upcalls
+  // to the protocol layer.
+  TransportLayer(int id,
+      void (*outgoing)(TransportLayer*, SprinklerSocket *),
+      void (*deliver)(TransportLayer*, SprinklerSocket *,
+          const char *, int, void (*release)(void *), void *));
+
+  // Add a new socket to the list of sockets that we know about.
+  // Returns the address of that SprinklerSocket object so that upper
+  // layers could reference.
+  SprinklerSocket *add_socket(int skt,
+      int (*input)(TransportLayer *, SprinklerSocket *),
+      int (*output)(TransportLayer *, SprinklerSocket *),
+      void (*deliver)(TransportLayer *, SprinklerSocket *,
+        const char *, int, void (*)(void *), void *),
+      char *descr);
+
+  // Send the given chunk of data to the given socket.  It is invoked from
+  // l1_wait(), like all other upcalls.  Currently we  simply buffer the
+  // message, and send it when l1_wait() is invoked.  Data buffer is freed
+  // after the data is sent and the chunk's deconstructor is called.
+  void async_socket_send(SprinklerSocket *ss, const char *data, int size);
+
+  // The socket is ready for writing.  Try to send everything that is queued.
+  void send_ready(SprinklerSocket *ss);
+
+  // Input is available on some socket.  Peers send packets that are
+  // up to size MAX_CHUNK_SIZE and start with a 4 byte header, the first
+  // three of which contain the actual packet size (including the header
+  // itself).
+  int recv_ready(SprinklerSocket *ss);
+
+  // Invoked when there is a client waiting on the server socket.
+  int got_client(SprinklerSocket *ls);
+
+  // Listen on a TCP port to wait for connections.
+  void listen(int port);
+
+  // Get inet address from (host, port).
+  bool get_inet_address(struct sockaddr_in *sin, const char *addr, int port);
+
+  // Register a remote Sprinkler node available to connect.
+  void register_node(const char *host, int port);
+
+  // Connect to a remote Sprinkler node.  The node will identify itself so no
+  // need to specify which node it is.
+  void try_connect(SocketAddr &socket_addr);
+
+  // Try to make connection to all available peers.
+  void try_connect_all();
+
+  // Send data to the given connection.
+  void async_send_message(SprinklerSocket *ss, const char *bytes, int len);
+
+  // Go through the registered sockets and see which need attention.
+  void prepare_poll(struct pollfd *fds);
+
+  // Invoke poll(), but with the right timeout.  'start' is the time at which
+  // l1_wait() was invoked, and 'now' is the current time.  'timeout' is the
+  // parameter to l1_wait().
+  int tl_poll(int64_t start, int64_t now, int timeout, struct pollfd *fds);
+
+  // There are events on one or more sockets.
+  // Return true if there is closed socket(s), false otherwise.
+  bool handle_events(struct pollfd *fds, int n);
+
+  // Remove sockets that are now closed.
+  void remove_closed_sockets();
+
+  // Wait for things to be ready.  Timeout is in milliseconds.  If negative,
+  // l1_wait never returns.
+  int wait(int timeout);
+
+ private:
+  // Invoke send/recv/poll syscalls.
+  int do_sendmsg(int skt, struct msghdr *mh);
+  int do_recv(int skt, char *data, int size);
+  int do_poll(struct pollfd fds[], nfds_t nfds, int timeout);
+
+  // Free chunks sent to upper layer.
+  void release_chunk(void *chunk);
+
   // Proxy ID; unique across a deployment.
-  int id;
+  int id_;
   // Linked list of sockets.
-  struct tl_socket *sockets;
+  std::list<SprinklerSocket> sockets_;
   // #sockets in the list.
-  int nsockets;
+  int nsockets_;
   // Addresses of peers.
-  struct tl_addrlist *addrs;
+  std::list<SocketAddr> addr_list_;
   // Time at which the node starts, i.e. l1_init is invoked.
-  struct timeval starttime;
+  timeval starttime_;
   // Interval between connection attempts.
-  int64_t time_to_attempt_connect;
+  int64_t time_to_attempt_connect_;
 
   // Upcalls.
-  void (*outgoing)(struct cmgr *, struct tl_socket *);
-  void (*deliver)(struct cmgr *, struct tl_socket *,
+  void (*outgoing_)(TransportLayer *, SprinklerSocket *);
+  void (*deliver_)(TransportLayer *, SprinklerSocket *,
       const char *, int, void (*release)(void *), void *);
 };
 
-// One of these is allocated for each remote proxy interface.
-struct tl_addrlist {
-  struct tl_addrlist *next;
-  struct sockaddr_in sin;
-  struct tl_socket *out;    // outgoing connection
-  struct tl_socket *in;     // incoming connection
-};
-
-// Outgoing message queue on socket.  release(arg) is invoked (from l1_wait())
-// when the data has been sent.
-struct tl_chunk_queue {
-  struct tl_chunk_queue *next;
-  const char *data;
-  int size;
-  void (*release)(void *arg);
-  void *arg;
-};
-
 // One of these is allocated for each socket.
-struct tl_socket {
-  struct tl_socket *next;
+struct SprinklerSocket {
   int skt;
-  int (*input)(struct cmgr *, struct tl_socket *);
-  int (*output)(struct cmgr *, struct tl_socket *);
-  int first;      // controls call to l1->outgoing
-  char *descr;    // for debugging
+  int (*input)(TransportLayer *, SprinklerSocket *);
+  int (*output)(TransportLayer *, SprinklerSocket *);
+  bool first;      // controls call to l1->outgoing
+  std::string descr;    // for debugging
   int sndbuf_size, rcvbuf_size;   // socket send and receive buffer sizes
 
   // This upcall is invoked when the socket is writable.
-  void (*send_rdy)(struct cmgr *, struct tl_socket *);
+  void (*send_rdy)(TransportLayer *, SprinklerSocket *);
 
   // Queue of chunks of data to send.
-  struct tl_chunk_queue *cqueue;    // outgoing chunk queue
-  struct tl_chunk_queue **cqlast;   // indirectly points to end
-  int offset;                       // #bytes that are sent already
-  unsigned int remainder;           // #bytes waiting to be sent
+  std::list<Chunk> cqueue;    // outgoing chunk queue
+  int offset;                 // #bytes that are sent already
+  int remainder;              // #bytes waiting to be sent
 
-  // Chunk to be sent.
-  char *chunk;
-  unsigned int received;    // #bytes currently in the chunk
+  // Data received from network to be delivered.
+  char *recv_buffer;
+  int received;    // #bytes currently in the chunk
 
-  void (*deliver)(struct cmgr *, struct tl_socket *, const char *,
-      unsigned int, void (*)(void *), void *);
-  enum { PS_UNKNOWN, PS_LOCAL, PS_PEER } type;
-  union {
-    struct l3_local *local;
-    struct l2_peer *peer;
-  } u;
+  void (*deliver)(TransportLayer *, SprinklerSocket *, const char *,
+      int, void (*)(void *), void *);
+
+  // Constructor.
+  SprinklerSocket(int skt,
+      int (*input)(TransportLayer *, SprinklerSocket *),
+      int (*output)(TransportLayer *, SprinklerSocket *),
+      void (*deliver)(TransportLayer *, SprinklerSocket *,
+          const char *, int, void (*)(void *), void *),
+      char *descr)
+      : skt(skt),
+        input(input), output(output), deliver(deliver),
+        descr(descr) {
+    first = true;
+  }
+
+  // Initialize socket buffer sizes.
+  void init();
 };
 
-struct cmgr *l1_init(int id,
-    void (*outgoing)(struct cmgr *, struct tl_socket *),
-    void (*deliver)(struct cmgr *, struct tl_socket *,
-      const char *, unsigned int, void (*release)(void *), void *));
+// One of these is allocated for each remote proxy interface.
+struct SocketAddr {
+  sockaddr_in sin;
+  SprinklerSocket *out;    // outgoing connection
+  SprinklerSocket *in;     // incoming connection
+};
 
-void l1_send(struct cmgr *l1, struct tl_socket *ls,
-    const char *bytes, unsigned int len,
-    void (*upcall)(void *env), void *env);
+// Data chunk to be sent out from a socket.
+struct Chunk {
+  const char *data;
+  int size;
+
+  ~Chunk() {
+    dfree(const_cast<char *>(data));
+  }
+};
 
 #endif  // TRANSPORT_LAYER_H_
