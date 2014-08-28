@@ -47,7 +47,8 @@ void dm_dump() {
 }
 
 void *dm_malloc(int size, char *file, int line) {
-  struct malloc_header *mh = malloc(sizeof(*mh) + size);
+  struct malloc_header *mh =
+      (struct malloc_header *) malloc(sizeof(*mh) + size);
 
   mh->magic = MAGIC;
   mh->size = size;
@@ -68,7 +69,8 @@ void *dm_malloc(int size, char *file, int line) {
 }
 
 void *dm_calloc(int n, int size, char *file, int line) {
-  struct malloc_header *mh = calloc(1, sizeof(*mh) + (n * size));
+  struct malloc_header *mh =
+      (struct malloc_header *) calloc(1, sizeof(*mh) + (n * size));
 
   mh->magic = MAGIC;
   mh->size = n * size;
@@ -89,7 +91,7 @@ void *dm_realloc(void *data, int size, char *file, int line) {
     fprintf(stderr, "dm_realloc: magic number corrupted\n");
     exit(1);
   }
-  mh = realloc(mh, sizeof(*mh) + size);
+  mh = (struct malloc_header *) realloc(mh, sizeof(*mh) + size);
   mh->file = file;
   mh->line = line;
   return &mh[1];
@@ -117,7 +119,7 @@ void dm_free(void *data, char *file, int line) {
     mh->next->back = mh->back;
   }
 
-  char *p = data;
+  char *p = (char *) data;
   while (--size > 0) {
     *p = 0xFF;
   }
