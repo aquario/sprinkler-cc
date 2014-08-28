@@ -67,6 +67,7 @@ void TransportLayer::async_socket_send(
   LOG(INFO) << "cqueue: " << ss->cqueue.empty();
   Chunk chunk(data, size, cleanup, env);
   ss->cqueue.push_back(chunk);
+
   ss->remainder += size;
 }
 
