@@ -11,7 +11,7 @@ bool sent, received;
 
 void outgoing(TransportLayer *tl, SprinklerSocket *ss) {
   LOG(INFO) << "outgoing";
-  tl->async_send_message(ss, "hello", 5, NULL, NULL);
+  tl->async_send_message(ss, "hello", 5, true, NULL, NULL);
   sent = true;
 }
 

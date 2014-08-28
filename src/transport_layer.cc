@@ -59,37 +59,68 @@ SprinklerSocket *TransportLayer::add_socket(int skt,
 }
 
 void TransportLayer::async_socket_send(
-    SprinklerSocket *ss, const char *data, int size,
+    SprinklerSocket *ss, const char *data, int size, bool is_ctrl,
     void (*cleanup)(void *env), void *env) {
   LOG(INFO) << "async_socket_send: send " << size << " bytes.";
   CHECK(ss);
 
-  LOG(INFO) << "cqueue: " << ss->cqueue.empty();
   Chunk chunk(data, size, cleanup, env);
-  ss->cqueue.push_back(chunk);
 
-  ss->remainder += size;
+  if (is_ctrl) {
+    ss->ctrl_cqueue.push_back(chunk);
+    ss->ctrl_remainder += size;
+  } else {
+    ss->data_cqueue.push_back(chunk);
+    ss->data_remainder += size;
+  }
 }
 
 int TransportLayer::do_sendmsg(int skt, struct msghdr *mh) {
   return sendmsg(skt, mh, 0);
 }
 
+// Copy what is queued into an iovec, skipping over what has already
+// been sent.
+//
+// TODO.  Could take into account the size of the socket send buffer.
+int TransportLayer::prepare_iovec(std::list<Chunk> &cqueue, int offset,
+    struct iovec *iov, int start) {
+  int iovlen = start;
+
+  std::list<Chunk>::iterator cit;
+  int total = 0;
+  if (!cqueue.empty()) {
+    for (cit = cqueue.begin();
+        cit != cqueue.end() && iovlen < IOV_MAX;
+        ++cit) {
+      if (offset >= cit->size) {
+        offset -= cit->size;
+      } else {
+        iov[iovlen].iov_base = (void *) (cit->data + offset);
+        iov[iovlen].iov_len = cit->size - offset;
+        iovlen++;
+        total += cit->size - offset;
+        offset = 0;
+      }
+    }
+  }
+
+  LOG(INFO) << "prepare_iovec: added " << total << " bytes.";
+
+  return iovlen;
+}
+
 int TransportLayer::send_ready(SprinklerSocket *ss) {
-  LOG(INFO) << "send_ready: offset = " << ss->offset
-            << "; bytes remaining = " << ss->remainder;
+  LOG(INFO) << "send_ready: ctrl_offset = " << ss->ctrl_offset
+            << "; ctrl_remainder = " << ss->ctrl_remainder
+            << "; data_offset = " << ss->data_offset
+            << "; data_remainder = " << ss->data_remainder;
 
   // If it's the first time, notify the protocol layer that there is an
   // outgoing connection.
   if (ss->first) {
     (*outgoing_)(this, ss);
   }
-
-  // If there's room in the send buffer, poll the layer above if it is
-  // so capable.
-//  if (ss->send_rdy != NULL && ss->remainder < ss->sndbuf_size) {
-//    (*ss->send_rdy)(ss);
-//  }
 
   // If it's the first time, stop here.
   if (ss->first) {
@@ -98,39 +129,16 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
     return 1;
   }
 
+  // TODO: call prepare_iovec
 #ifndef IOV_MAX
 #define IOV_MAX 1024
 #endif
 
-  // Copy what is queued into an iovec, skipping over what has already
-  // been sent.
-  //
-  // TODO.  Could take into account the size of the socket send buffer.
-  struct iovec *iov = 0;
-  int iovlen = 0;
-
-  std::list<Chunk>::iterator cit;
-  int total = 0;
-  if (!ss->cqueue.empty()) {
-    int offset = ss->offset;
-    for (cit = ss->cqueue.begin();
-         cit != ss->cqueue.end() && iovlen < IOV_MAX;
-         ++cit) {
-      if (offset >= cit->size) {
-        offset -= cit->size;
-      } else {
-        if (iovlen == 0) {
-          iov = (struct iovec *) dmalloc(sizeof(*iov));
-        } else {
-          iov = (struct iovec *) drealloc(iov, (iovlen + 1) * sizeof(*iov));
-        }
-        iov[iovlen].iov_base = (void *) (cit->data + offset);
-        iov[iovlen].iov_len = cit->size - offset;
-        iovlen++;
-        total += cit->size - offset;
-        offset = 0;
-      }
-    }
+  struct iovec *iov = (struct iovec *) dcalloc(sizeof(*iov), IOV_MAX);
+  int iovlen;
+  iovlen = prepare_iovec(ss->ctrl_cqueue, ss->ctrl_offset, iov, 0);
+  if (iovlen < IOV_MAX) {
+    iovlen = prepare_iovec(ss->data_cqueue, ss->data_offset, iov, iovlen);
   }
 
   // If there's anything in the iovec, send it now.
@@ -146,12 +154,19 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
       // is cleaned up automatically.
       LOG(FATAL) << "send_ready: sendmsg";
     } else {
-      LOG(INFO) << "send_ready: sent " << n << " out of "
-                << total << " bytes to socket " << ss->skt
+      LOG(INFO) << "send_ready: sent " << n << " bytes to socket " << ss->skt
                 << "; iovlen = " << iovlen;
 
-      ss->offset += n;
-      ss->remainder -= n;
+      if (n <= ss->ctrl_remainder) {
+        ss->ctrl_offset += n;
+        ss->ctrl_remainder -= n;
+      } else {
+        ss->data_offset += (n - ss->ctrl_remainder);
+        ss->data_remainder -= (n - ss->ctrl_remainder);
+
+        ss->ctrl_offset += ss->ctrl_remainder;
+        ss->ctrl_remainder = 0;
+      }
     }
     dfree(iov);
   } else {
@@ -159,10 +174,17 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
   }
 
   // Release everything that can be released in the queue.
-  while ((cit = ss->cqueue.begin()) != ss->cqueue.end()
-      && ss->offset >= cit->size) {
-    ss->offset -= cit->size;
-    ss->cqueue.pop_front();
+  std::list<Chunk>::iterator cit;
+  while ((cit = ss->ctrl_cqueue.begin()) != ss->ctrl_cqueue.end()
+      && ss->ctrl_offset >= cit->size) {
+    ss->ctrl_offset -= cit->size;
+    ss->ctrl_cqueue.pop_front();
+  }
+
+  while ((cit = ss->data_cqueue.begin()) != ss->data_cqueue.end()
+      && ss->data_offset >= cit->size) {
+    ss->data_offset -= cit->size;
+    ss->data_cqueue.pop_front();
   }
 
   // If the buffer is now empty, try to fill it up.
@@ -437,7 +459,7 @@ void TransportLayer::try_connect_all() {
 }
 
 void TransportLayer::async_send_message(SprinklerSocket *ss,
-    const char *bytes, int len,
+    const char *bytes, int len, bool is_ctrl,
     void (*cleanup)(void *env), void *env) {
   char *hdr = (char *) dcalloc(4, 1);
 
@@ -445,8 +467,8 @@ void TransportLayer::async_send_message(SprinklerSocket *ss,
   hdr[0] = len & 0xFF;
   hdr[1] = (len >> 8) & 0xFF;
   hdr[2] = (len >> 16) & 0xFF;
-  async_socket_send(ss, hdr, 4, release_chunk, hdr);
-  async_socket_send(ss, bytes, len - 4, cleanup, env);
+  async_socket_send(ss, hdr, 4, is_ctrl, release_chunk, hdr);
+  async_socket_send(ss, bytes, len - 4, is_ctrl, cleanup, env);
 }
 
 int TransportLayer::do_poll(struct pollfd fds[], nfds_t nfds, int timeout) {
@@ -473,7 +495,8 @@ void TransportLayer::prepare_poll(struct pollfd *fds) {
     }
 
     // Check for output if there's something to write or the very first time.
-    if (sit->output != 0 && (sit->remainder > 0 || sit->first)) {
+    if (sit->output != 0
+        && (sit->ctrl_remainder + sit->data_remainder > 0 || sit->first)) {
       fds[i].fd = sit->skt;
       events |= POLLOUT;
     }

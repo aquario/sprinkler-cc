@@ -55,8 +55,16 @@ class TransportLayer {
   // buffer the message, and send it when TransportLayer::wait() is invoked.
   // Data buffer is freed by calling the cleanup handler after the data is
   // sent and the chunk's deconstructor is called.
-  void async_socket_send(SprinklerSocket *ss, const char *data, int size,
+  void async_socket_send(SprinklerSocket *ss,
+      const char *data, int size, bool is_ctrl,
       void (*cleanup)(void *env), void *env);
+
+  // Copy what is queued into an iovec, skipping over what has already
+  // been sent.
+  //
+  // TODO.  Could take into account the size of the socket send buffer.
+  int prepare_iovec(std::list<Chunk> &cqueue, int offset,
+      struct iovec *iov, int start);
 
   // The socket is ready for writing.  Try to send everything that is queued.
   int send_ready(SprinklerSocket *ss);
@@ -87,7 +95,8 @@ class TransportLayer {
   void try_connect_all();
 
   // Send data to the given connection.
-  void async_send_message(SprinklerSocket *ss, const char *bytes, int len,
+  void async_send_message(SprinklerSocket *ss,
+      const char *bytes, int len, bool is_ctrl,
       void (*cleanup)(void *env), void *env);
 
   // Go through the registered sockets and see which need attention.
@@ -159,13 +168,14 @@ struct SprinklerSocket {
   std::string descr;    // for debugging
   int sndbuf_size, rcvbuf_size;   // socket send and receive buffer sizes
 
-  // This upcall is invoked when the socket is writable.
-//  void (*send_rdy)(SprinklerSocket *);
-
   // Queue of chunks of data to send.
-  std::list<Chunk> cqueue;    // outgoing chunk queue
-  int offset;                 // #bytes that are sent already
-  int remainder;              // #bytes waiting to be sent
+  std::list<Chunk> ctrl_cqueue;    // outgoing chunk queue
+  int ctrl_offset;                 // #bytes that are sent already
+  int ctrl_remainder;              // #bytes waiting to be sent
+
+  std::list<Chunk> data_cqueue;    // outgoing chunk queue
+  int data_offset;                 // #bytes that are sent already
+  int data_remainder;              // #bytes waiting to be sent
 
   // Data received from network to be delivered.
   char *recv_buffer;
@@ -186,7 +196,8 @@ struct SprinklerSocket {
         descr(descr) {
     first = true;
     sndbuf_size = rcvbuf_size = 0;
-    offset = remainder = 0;
+    ctrl_offset = ctrl_remainder = 0;
+    data_offset = data_remainder = 0;
     recv_buffer = NULL;
     received = 0;
   }
