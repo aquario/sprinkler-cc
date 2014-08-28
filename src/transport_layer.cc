@@ -46,7 +46,7 @@ SprinklerSocket *TransportLayer::add_socket(int skt,
     std::function<int(SprinklerSocket *)> output,
     void (*deliver)(TransportLayer *, SprinklerSocket *,
         const char *, int, void (*)(void *), void *),
-    char *descr) {
+    const std::string &descr) {
   SprinklerSocket ss(skt, input, output, deliver, descr);
   ss.init();
 
@@ -79,15 +79,11 @@ int TransportLayer::do_sendmsg(int skt, struct msghdr *mh) {
   return sendmsg(skt, mh, 0);
 }
 
-// Copy what is queued into an iovec, skipping over what has already
-// been sent.
-//
-// TODO.  Could take into account the size of the socket send buffer.
-int TransportLayer::prepare_iovec(std::list<Chunk> &cqueue, int offset,
+int TransportLayer::prepare_iovec(const std::list<Chunk> &cqueue, int offset,
     struct iovec *iov, int start) {
   int iovlen = start;
 
-  std::list<Chunk>::iterator cit;
+  std::list<Chunk>::const_iterator cit;
   int total = 0;
   if (!cqueue.empty()) {
     for (cit = cqueue.begin();
@@ -96,7 +92,8 @@ int TransportLayer::prepare_iovec(std::list<Chunk> &cqueue, int offset,
       if (offset >= cit->size) {
         offset -= cit->size;
       } else {
-        iov[iovlen].iov_base = (void *) (cit->data + offset);
+        iov[iovlen].iov_base =
+            static_cast<void *>(const_cast<char *>(cit->data + offset));
         iov[iovlen].iov_len = cit->size - offset;
         iovlen++;
         total += cit->size - offset;
@@ -129,7 +126,6 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
     return 1;
   }
 
-  // TODO: call prepare_iovec
 #ifndef IOV_MAX
 #define IOV_MAX 1024
 #endif
@@ -149,7 +145,7 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
     mh.msg_iovlen = iovlen;
     int n = do_sendmsg(ss->skt, &mh);
     if (n <= 0) {
-      // TODO: should I do anything about this?  Presumably the
+      // TODO(haoyan): should I do anything about this?  Presumably the
       // receive side of the socket is closed and everything
       // is cleaned up automatically.
       LOG(FATAL) << "send_ready: sendmsg";
@@ -205,7 +201,7 @@ void TransportLayer::release_chunk(void *chunk) {
 int TransportLayer::recv_ready(SprinklerSocket *ss) {
   LOG(INFO) << "recv_ready";
   if (ss->recv_buffer == NULL) {
-    ss->recv_buffer = (char *) dcalloc(MAX_CHUNK_SIZE, 1);
+    ss->recv_buffer = static_cast<char *>(dcalloc(MAX_CHUNK_SIZE, 1));
     ss->received = 0;
   }
 
@@ -253,9 +249,9 @@ int TransportLayer::recv_ready(SprinklerSocket *ss) {
 
   // If we received exactly one chunk, deliver it without copying.
   if (size == ss->received) {
-    ss->recv_buffer = (char *) drealloc(ss->recv_buffer, size);
-    (*ss->deliver)
-        (this, ss, ss->recv_buffer + 4, size - 4, release_chunk, ss->recv_buffer);
+    ss->recv_buffer = static_cast<char *>(drealloc(ss->recv_buffer, size));
+    (*ss->deliver)(this, ss, ss->recv_buffer + 4, size - 4,
+        release_chunk, ss->recv_buffer);
     ss->recv_buffer = 0;
     return 1;
   }
@@ -264,7 +260,7 @@ int TransportLayer::recv_ready(SprinklerSocket *ss) {
   int offset = 0, remainder = 0;
   do {
     // Deliver a part of the chunk.
-    char *copy = (char *) dmalloc(size - 4);
+    char *copy = static_cast<char *>(dmalloc(size - 4));
     memcpy(copy, ss->recv_buffer + offset + 4, size - 4);
     (*ss->deliver)(this, ss, copy, size - 4, release_chunk, copy);
     offset += size;
@@ -317,7 +313,7 @@ int TransportLayer::got_client(SprinklerSocket *ss) {
   add_socket(clt,
       std::bind(&TransportLayer::recv_ready, this, std::placeholders::_1),
       std::bind(&TransportLayer::send_ready, this, std::placeholders::_1),
-      deliver_, "got_client");
+      deliver_, kSocIn);
   return 1;
 }
 
@@ -331,7 +327,7 @@ void TransportLayer::tl_listen(int port) {
 
   int on = 1;
   setsockopt(skt, SOL_SOCKET, SO_REUSEADDR,
-      (void *) &on, sizeof(on));
+      static_cast<void *>(&on), sizeof(on));
 
   int buflen = 128 * 1024;
   setsockopt(skt, SOL_SOCKET, SO_SNDBUF, &buflen, sizeof(buflen));
@@ -354,7 +350,7 @@ void TransportLayer::tl_listen(int port) {
   }
   add_socket(skt,
       std::bind(&TransportLayer::got_client, this, std::placeholders::_1),
-      NULL, NULL, "listen TCP");
+      NULL, NULL, kSocListen);
 }
 
 bool TransportLayer::get_inet_address(struct sockaddr_in *sin,
@@ -407,9 +403,9 @@ void TransportLayer::register_peer(const char *host, int port) {
   soc_addr.in = soc_addr.out = NULL;
 }
 
-void TransportLayer::try_connect(SocketAddr &socket_addr) {
-  LOG(INFO) << "out addr: " << (uint64_t) socket_addr.out;
-  if (socket_addr.out == NULL) {
+void TransportLayer::try_connect(SocketAddr *socket_addr) {
+  LOG(INFO) << "out addr: " << (uint64_t) socket_addr->out;
+  if (socket_addr->out == NULL) {
     // Create the socket.
     int skt = socket(AF_INET, SOCK_STREAM, 0);
     if (skt < 0) {
@@ -431,8 +427,8 @@ void TransportLayer::try_connect(SocketAddr &socket_addr) {
     }
 
     // Start connect.
-    if (connect(skt, (struct sockaddr *) &socket_addr.sin,
-        sizeof(socket_addr.sin)) < 0) {
+    if (connect(skt, (struct sockaddr *) &socket_addr->sin,
+        sizeof(socket_addr->sin)) < 0) {
       extern int errno;
       if (errno != EINPROGRESS) {
         LOG(ERROR) << strerror(errno) << " register_node: connect";
@@ -442,10 +438,10 @@ void TransportLayer::try_connect(SocketAddr &socket_addr) {
     }
 
     // Register the socket.
-    socket_addr.out = add_socket(skt,
+    socket_addr->out = add_socket(skt,
         std::bind(&TransportLayer::recv_ready, this, std::placeholders::_1),
         std::bind(&TransportLayer::send_ready, this, std::placeholders::_1),
-        deliver_, "sprinkler_peer");
+        deliver_, kSocOut);
   }
 }
 
@@ -454,14 +450,14 @@ void TransportLayer::try_connect_all() {
   for (std::list<SocketAddr>::iterator sit = addr_list_.begin();
        sit != addr_list_.end();
        ++sit) {
-    try_connect(*sit);
+    try_connect(&*sit);
   }
 }
 
 void TransportLayer::async_send_message(SprinklerSocket *ss,
     const char *bytes, int len, bool is_ctrl,
     void (*cleanup)(void *env), void *env) {
-  char *hdr = (char *) dcalloc(4, 1);
+  char *hdr = static_cast<char *>(dcalloc(4, 1));
 
   len += 4;
   hdr[0] = len & 0xFF;

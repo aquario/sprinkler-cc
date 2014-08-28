@@ -40,6 +40,30 @@ class TransportLayer {
   // Return the number of microseconds since we started.
   int64_t uptime();
 
+  // Listen on a TCP port to wait for connections.
+  void tl_listen(int port);
+
+  // Register a peer Sprinkler node available to connect.
+  void register_peer(const char *host, int port);
+
+  // Send data to the given connection.
+  void async_send_message(SprinklerSocket *ss,
+      const char *bytes, int len, bool is_ctrl,
+      void (*cleanup)(void *env), void *env);
+
+  // Wait for things to be ready.  Timeout is in milliseconds.  If negative,
+  // l1_wait never returns.
+  int wait(int timeout);
+
+ private:
+  // Invoke send/recv/poll syscalls.
+  int do_sendmsg(int skt, struct msghdr *mh);
+  int do_recv(int skt, char *data, int size);
+  int do_poll(struct pollfd fds[], nfds_t nfds, int timeout);
+
+  // Free chunks sent to upper layer.
+  static void release_chunk(void *chunk);
+
   // Add a new socket to the list of sockets that we know about.
   // Returns the address of that SprinklerSocket object so that upper
   // layers could reference.
@@ -48,7 +72,7 @@ class TransportLayer {
       std::function<int(SprinklerSocket *)> output,
       void (*deliver)(TransportLayer *, SprinklerSocket *,
         const char *, int, void (*)(void *), void *),
-      char *descr);
+      const std::string &descr);
 
   // Send the given chunk of data to the given socket.  It is invoked from
   // TransportLayer::wait(), like all other upcalls.  Currently we simply
@@ -63,7 +87,7 @@ class TransportLayer {
   // been sent.
   //
   // TODO.  Could take into account the size of the socket send buffer.
-  int prepare_iovec(std::list<Chunk> &cqueue, int offset,
+  int prepare_iovec(const std::list<Chunk> &cqueue, int offset,
       struct iovec *iov, int start);
 
   // The socket is ready for writing.  Try to send everything that is queued.
@@ -78,26 +102,15 @@ class TransportLayer {
   // Invoked when there is a client waiting on the server socket.
   int got_client(SprinklerSocket *ls);
 
-  // Listen on a TCP port to wait for connections.
-  void tl_listen(int port);
-
   // Get inet address from (host, port).
   bool get_inet_address(struct sockaddr_in *sin, const char *addr, int port);
 
-  // Register a peer Sprinkler node available to connect.
-  void register_peer(const char *host, int port);
-
   // Connect to a remote Sprinkler node.  The node will identify itself so no
   // need to specify which node it is.
-  void try_connect(SocketAddr &socket_addr);
+  void try_connect(SocketAddr *socket_addr);
 
   // Try to make connection to all available peers.
   void try_connect_all();
-
-  // Send data to the given connection.
-  void async_send_message(SprinklerSocket *ss,
-      const char *bytes, int len, bool is_ctrl,
-      void (*cleanup)(void *env), void *env);
 
   // Go through the registered sockets and see which need attention.
   void prepare_poll(struct pollfd *fds);
@@ -114,18 +127,10 @@ class TransportLayer {
   // Remove sockets that are now closed.
   void remove_closed_sockets();
 
-  // Wait for things to be ready.  Timeout is in milliseconds.  If negative,
-  // l1_wait never returns.
-  int wait(int timeout);
-
- private:
-  // Invoke send/recv/poll syscalls.
-  int do_sendmsg(int skt, struct msghdr *mh);
-  int do_recv(int skt, char *data, int size);
-  int do_poll(struct pollfd fds[], nfds_t nfds, int timeout);
-
-  // Free chunks sent to upper layer.
-  static void release_chunk(void *chunk);
+  // Type of socket connections.
+  const std::string kSocIn = "incoming connection";
+  const std::string kSocOut = "outgoing connection";
+  const std::string kSocListen = "listening socket";
 
   // Proxy ID; unique across a deployment.
   int id_;
@@ -190,7 +195,7 @@ struct SprinklerSocket {
       std::function<int(SprinklerSocket *)> output,
       void (*deliver)(TransportLayer *, SprinklerSocket *,
           const char *, int, void (*)(void *), void *),
-      char *descr)
+      const std::string &descr)
       : skt(skt),
         input(input), output(output), deliver(deliver),
         descr(descr) {
