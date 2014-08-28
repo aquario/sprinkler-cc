@@ -6,12 +6,13 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <strings.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <functional>
 #include <list>
 #include <string>
 
@@ -32,28 +33,33 @@ class TransportLayer {
   // Constructor that specifies the id of this Sprinkler node, and upcalls
   // to the protocol layer.
   TransportLayer(int id,
-      void (*outgoing)(TransportLayer*, SprinklerSocket *),
-      void (*deliver)(TransportLayer*, SprinklerSocket *,
-          const char *, int, void (*release)(void *), void *));
+      void (*outgoing)(TransportLayer *, SprinklerSocket *),
+      void (*deliver)(TransportLayer *, SprinklerSocket *,
+          const char *, int, void (*)(void *), void *));
+
+  // Return the number of microseconds since we started.
+  int64_t uptime();
 
   // Add a new socket to the list of sockets that we know about.
   // Returns the address of that SprinklerSocket object so that upper
   // layers could reference.
   SprinklerSocket *add_socket(int skt,
-      int (*input)(TransportLayer *, SprinklerSocket *),
-      int (*output)(TransportLayer *, SprinklerSocket *),
+      std::function<int(SprinklerSocket *)> input,
+      std::function<int(SprinklerSocket *)> output,
       void (*deliver)(TransportLayer *, SprinklerSocket *,
         const char *, int, void (*)(void *), void *),
       char *descr);
 
   // Send the given chunk of data to the given socket.  It is invoked from
-  // l1_wait(), like all other upcalls.  Currently we  simply buffer the
-  // message, and send it when l1_wait() is invoked.  Data buffer is freed
-  // after the data is sent and the chunk's deconstructor is called.
-  void async_socket_send(SprinklerSocket *ss, const char *data, int size);
+  // TransportLayer::wait(), like all other upcalls.  Currently we simply
+  // buffer the message, and send it when TransportLayer::wait() is invoked.
+  // Data buffer is freed by calling the cleanup handler after the data is
+  // sent and the chunk's deconstructor is called.
+  void async_socket_send(SprinklerSocket *ss, const char *data, int size,
+      void (*cleanup)(void *env), void *env);
 
   // The socket is ready for writing.  Try to send everything that is queued.
-  void send_ready(SprinklerSocket *ss);
+  int send_ready(SprinklerSocket *ss);
 
   // Input is available on some socket.  Peers send packets that are
   // up to size MAX_CHUNK_SIZE and start with a 4 byte header, the first
@@ -65,13 +71,13 @@ class TransportLayer {
   int got_client(SprinklerSocket *ls);
 
   // Listen on a TCP port to wait for connections.
-  void listen(int port);
+  void tl_listen(int port);
 
   // Get inet address from (host, port).
   bool get_inet_address(struct sockaddr_in *sin, const char *addr, int port);
 
-  // Register a remote Sprinkler node available to connect.
-  void register_node(const char *host, int port);
+  // Register a peer Sprinkler node available to connect.
+  void register_peer(const char *host, int port);
 
   // Connect to a remote Sprinkler node.  The node will identify itself so no
   // need to specify which node it is.
@@ -81,7 +87,8 @@ class TransportLayer {
   void try_connect_all();
 
   // Send data to the given connection.
-  void async_send_message(SprinklerSocket *ss, const char *bytes, int len);
+  void async_send_message(SprinklerSocket *ss, const char *bytes, int len,
+      void (*cleanup)(void *env), void *env);
 
   // Go through the registered sockets and see which need attention.
   void prepare_poll(struct pollfd *fds);
@@ -109,7 +116,7 @@ class TransportLayer {
   int do_poll(struct pollfd fds[], nfds_t nfds, int timeout);
 
   // Free chunks sent to upper layer.
-  void release_chunk(void *chunk);
+  static void release_chunk(void *chunk);
 
   // Proxy ID; unique across a deployment.
   int id_;
@@ -130,17 +137,30 @@ class TransportLayer {
       const char *, int, void (*release)(void *), void *);
 };
 
+// Data chunk to be sent out from a socket.
+struct Chunk {
+  const char *data;
+  int size;
+  void (*cleanup)(void *env);
+  void *env;
+
+  Chunk(const char *data, int size, void (*cleanup)(void *), void *env)
+      : data(data), size(size), cleanup(cleanup), env(env) {}
+
+  ~Chunk() {}
+};
+
 // One of these is allocated for each socket.
 struct SprinklerSocket {
   int skt;
-  int (*input)(TransportLayer *, SprinklerSocket *);
-  int (*output)(TransportLayer *, SprinklerSocket *);
+  std::function<int(SprinklerSocket *)> input;
+  std::function<int(SprinklerSocket *)> output;
   bool first;      // controls call to l1->outgoing
   std::string descr;    // for debugging
   int sndbuf_size, rcvbuf_size;   // socket send and receive buffer sizes
 
   // This upcall is invoked when the socket is writable.
-  void (*send_rdy)(TransportLayer *, SprinklerSocket *);
+//  void (*send_rdy)(SprinklerSocket *);
 
   // Queue of chunks of data to send.
   std::list<Chunk> cqueue;    // outgoing chunk queue
@@ -156,8 +176,8 @@ struct SprinklerSocket {
 
   // Constructor.
   SprinklerSocket(int skt,
-      int (*input)(TransportLayer *, SprinklerSocket *),
-      int (*output)(TransportLayer *, SprinklerSocket *),
+      std::function<int(SprinklerSocket *)> input,
+      std::function<int(SprinklerSocket *)> output,
       void (*deliver)(TransportLayer *, SprinklerSocket *,
           const char *, int, void (*)(void *), void *),
       char *descr)
@@ -165,6 +185,10 @@ struct SprinklerSocket {
         input(input), output(output), deliver(deliver),
         descr(descr) {
     first = true;
+    sndbuf_size = rcvbuf_size = 0;
+    offset = remainder = 0;
+    recv_buffer = NULL;
+    received = 0;
   }
 
   // Initialize socket buffer sizes.
@@ -176,15 +200,9 @@ struct SocketAddr {
   sockaddr_in sin;
   SprinklerSocket *out;    // outgoing connection
   SprinklerSocket *in;     // incoming connection
-};
 
-// Data chunk to be sent out from a socket.
-struct Chunk {
-  const char *data;
-  int size;
-
-  ~Chunk() {
-    dfree(const_cast<char *>(data));
+  SocketAddr() : out(NULL), in(NULL) {
+    memset(&sin, 0, sizeof(sin));
   }
 };
 
