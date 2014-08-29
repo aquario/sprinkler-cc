@@ -33,9 +33,9 @@ class TransportLayer {
   // Constructor that specifies the id of this Sprinkler node, and upcalls
   // to the protocol layer.
   TransportLayer(int id,
-      void (*outgoing)(TransportLayer *, SprinklerSocket *),
-      void (*deliver)(TransportLayer *, SprinklerSocket *,
-          const char *, int, void (*)(void *), void *));
+      std::function<void(SprinklerSocket *)> outgoing,
+      std::function<void(SprinklerSocket *,
+          const char *, int, void (*)(void *), void *)> deliver);
 
   // Return the number of microseconds since we started.
   int64_t uptime();
@@ -70,8 +70,8 @@ class TransportLayer {
   SprinklerSocket *add_socket(int skt,
       std::function<int(SprinklerSocket *)> input,
       std::function<int(SprinklerSocket *)> output,
-      void (*deliver)(TransportLayer *, SprinklerSocket *,
-        const char *, int, void (*)(void *), void *),
+      std::function<void(SprinklerSocket *,
+        const char *, int, void (*)(void *), void *)> deliver,
       const std::string &descr);
 
   // Send the given chunk of data to the given socket.  It is invoked from
@@ -146,9 +146,9 @@ class TransportLayer {
   int64_t time_to_attempt_connect_;
 
   // Upcalls.
-  void (*outgoing_)(TransportLayer *, SprinklerSocket *);
-  void (*deliver_)(TransportLayer *, SprinklerSocket *,
-      const char *, int, void (*release)(void *), void *);
+  std::function<void(SprinklerSocket *)> outgoing_;
+  std::function<void(SprinklerSocket *,
+      const char *, int, void (*)(void *), void *)> deliver_;
 };
 
 // Data chunk to be sent out from a socket.
@@ -186,15 +186,15 @@ struct SprinklerSocket {
   char *recv_buffer;
   int received;    // #bytes currently in the chunk
 
-  void (*deliver)(TransportLayer *, SprinklerSocket *, const char *,
-      int, void (*)(void *), void *);
+  std::function<void(SprinklerSocket *,
+      const char *, int, void (*)(void *), void *)> deliver;
 
   // Constructor.
   SprinklerSocket(int skt,
       std::function<int(SprinklerSocket *)> input,
       std::function<int(SprinklerSocket *)> output,
-      void (*deliver)(TransportLayer *, SprinklerSocket *,
-          const char *, int, void (*)(void *), void *),
+      std::function<void(SprinklerSocket *,
+        const char *, int, void (*)(void *), void *)> deliver,
       const std::string &descr)
       : skt(skt),
         input(input), output(output), deliver(deliver),

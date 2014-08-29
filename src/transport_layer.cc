@@ -11,9 +11,9 @@
 #include "dmalloc.h"
 
 TransportLayer::TransportLayer(int id,
-    void (*outgoing)(TransportLayer *, SprinklerSocket *),
-    void (*deliver)(TransportLayer *, SprinklerSocket *,
-        const char *, int, void (*)(void *), void *)) {
+      std::function<void(SprinklerSocket *)> outgoing,
+      std::function<void(SprinklerSocket *,
+          const char *, int, void (*)(void *), void *)> deliver) {
   id_ = id;
   outgoing_ = outgoing;
   deliver_ = deliver;
@@ -44,8 +44,8 @@ int64_t TransportLayer::uptime() {
 SprinklerSocket *TransportLayer::add_socket(int skt,
     std::function<int(SprinklerSocket *)> input,
     std::function<int(SprinklerSocket *)> output,
-    void (*deliver)(TransportLayer *, SprinklerSocket *,
-        const char *, int, void (*)(void *), void *),
+    std::function<void(SprinklerSocket *,
+      const char *, int, void (*)(void *), void *)> deliver,
     const std::string &descr) {
   SprinklerSocket ss(skt, input, output, deliver, descr);
   ss.init();
@@ -116,7 +116,7 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
   // If it's the first time, notify the protocol layer that there is an
   // outgoing connection.
   if (ss->first) {
-    (*outgoing_)(this, ss);
+    outgoing_(ss);
   }
 
   // If it's the first time, stop here.
@@ -250,7 +250,7 @@ int TransportLayer::recv_ready(SprinklerSocket *ss) {
   // If we received exactly one chunk, deliver it without copying.
   if (size == ss->received) {
     ss->recv_buffer = static_cast<char *>(drealloc(ss->recv_buffer, size));
-    (*ss->deliver)(this, ss, ss->recv_buffer + 4, size - 4,
+    ss->deliver(ss, ss->recv_buffer + 4, size - 4,
         release_chunk, ss->recv_buffer);
     ss->recv_buffer = 0;
     return 1;
@@ -262,7 +262,7 @@ int TransportLayer::recv_ready(SprinklerSocket *ss) {
     // Deliver a part of the chunk.
     char *copy = static_cast<char *>(dmalloc(size - 4));
     memcpy(copy, ss->recv_buffer + offset + 4, size - 4);
-    (*ss->deliver)(this, ss, copy, size - 4, release_chunk, copy);
+    ss->deliver(ss, copy, size - 4, release_chunk, copy);
     offset += size;
 
     // See how much is left.

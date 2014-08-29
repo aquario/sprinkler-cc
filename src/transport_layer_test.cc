@@ -7,15 +7,16 @@ DEFINE_int32(id, 0, "ID of the Sprinkler node.");
 DEFINE_int32(listen_port, 0, "Port number for incoming connections.");
 DEFINE_int32(peer_port, 0, "Port number for peer node.");
 
+TransportLayer *tl;
 bool sent, received;
 
-void outgoing(TransportLayer *tl, SprinklerSocket *ss) {
+void outgoing(SprinklerSocket *ss) {
   LOG(INFO) << "outgoing";
   tl->async_send_message(ss, "hello", 5, true, NULL, NULL);
   sent = true;
 }
 
-void deliver(TransportLayer *tl, SprinklerSocket *ss,
+void deliver(SprinklerSocket *ss,
     const char *data, int size, void (*release)(void *), void *arg) {
   CHECK_STREQ(data, "hello");
   LOG(INFO) << "deliver: got " << size << " bytes: " << data;
@@ -33,7 +34,6 @@ void TestWelcomeMessage() {
 
   sent = received = false;
 
-  TransportLayer *tl;
   tl = new TransportLayer(FLAGS_id, outgoing, deliver);
   tl->tl_listen(FLAGS_listen_port);
   tl->register_peer("localhost", FLAGS_peer_port);
