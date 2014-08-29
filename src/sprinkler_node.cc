@@ -6,10 +6,10 @@
 void SprinklerNode::outgoing(SprinklerSocket *ss) {
 }
 
-void SprinklerNode::deliver(SprinklerSocket *ss,
-    const char *, int, void (*)(void *), void *) {
+void SprinklerNode::deliver(SprinklerSocket *ss, const char *data, int size,
+    std::function<void(void *)> release, void *env) {
 }
 
 int main() {
-  SprinklerNode s(0, 0);
+  SprinklerNode s(0, 0, 0);
 }

@@ -10,10 +10,14 @@
 
 #include "dmalloc.h"
 
+#ifndef IOV_MAX
+#define IOV_MAX 1024
+#endif
+
 TransportLayer::TransportLayer(int id,
       std::function<void(SprinklerSocket *)> outgoing,
       std::function<void(SprinklerSocket *,
-          const char *, int, void (*)(void *), void *)> deliver) {
+          const char *, int, std::function<void(void *)>, void *)> deliver) {
   id_ = id;
   outgoing_ = outgoing;
   deliver_ = deliver;
@@ -45,7 +49,7 @@ SprinklerSocket *TransportLayer::add_socket(int skt,
     std::function<int(SprinklerSocket *)> input,
     std::function<int(SprinklerSocket *)> output,
     std::function<void(SprinklerSocket *,
-      const char *, int, void (*)(void *), void *)> deliver,
+      const char *, int, std::function<void(void *)>, void *)> deliver,
     const std::string &descr) {
   SprinklerSocket ss(skt, input, output, deliver, descr);
   ss.init();
@@ -125,10 +129,6 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
     LOG(INFO) << "set first to false";
     return 1;
   }
-
-#ifndef IOV_MAX
-#define IOV_MAX 1024
-#endif
 
   struct iovec *iov = (struct iovec *) dcalloc(sizeof(*iov), IOV_MAX);
   int iovlen;

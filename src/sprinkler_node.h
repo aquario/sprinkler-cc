@@ -26,7 +26,7 @@ struct SubInfo {
 
 class SprinklerNode {
  public:
-  SprinklerNode(int id, int role)
+  SprinklerNode(int id, int role, int nstreams)
     : id_(id), role_(role),
       nstreams_(nstreams),
       tl_(id,
@@ -43,7 +43,7 @@ class SprinklerNode {
   void outgoing(SprinklerSocket *ss);
   // Upcall on receiving a message.
   void deliver(SprinklerSocket *ss,
-      const char *, int, void (*)(void *), void *);
+      const char *, int, std::function<void(void *)>, void *);
 
   // A list of possible roles
   static const int kClient = 0;

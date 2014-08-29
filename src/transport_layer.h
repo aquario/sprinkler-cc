@@ -35,7 +35,7 @@ class TransportLayer {
   TransportLayer(int id,
       std::function<void(SprinklerSocket *)> outgoing,
       std::function<void(SprinklerSocket *,
-          const char *, int, void (*)(void *), void *)> deliver);
+          const char *, int, std::function<void(void *)>, void *)> deliver);
 
   // Return the number of microseconds since we started.
   int64_t uptime();
@@ -71,7 +71,7 @@ class TransportLayer {
       std::function<int(SprinklerSocket *)> input,
       std::function<int(SprinklerSocket *)> output,
       std::function<void(SprinklerSocket *,
-        const char *, int, void (*)(void *), void *)> deliver,
+        const char *, int, std::function<void(void *)>, void *)> deliver,
       const std::string &descr);
 
   // Send the given chunk of data to the given socket.  It is invoked from
@@ -148,18 +148,19 @@ class TransportLayer {
   // Upcalls.
   std::function<void(SprinklerSocket *)> outgoing_;
   std::function<void(SprinklerSocket *,
-      const char *, int, void (*)(void *), void *)> deliver_;
+      const char *, int, std::function<void(void *)>, void *)> deliver_;
 };
 
 // Data chunk to be sent out from a socket.
 struct Chunk {
   const char *data;
   int size;
-  void (*cleanup)(void *env);
+  std::function<void(void *)> cleanup;
   void *env;
 
-  Chunk(const char *data, int size, void (*cleanup)(void *), void *env)
-      : data(data), size(size), cleanup(cleanup), env(env) {}
+  Chunk(const char *data, int size,
+      std::function<void(void *)> cleanup, void *env)
+    : data(data), size(size), cleanup(cleanup), env(env) {}
 
   ~Chunk() {}
 };
@@ -187,18 +188,18 @@ struct SprinklerSocket {
   int received;    // #bytes currently in the chunk
 
   std::function<void(SprinklerSocket *,
-      const char *, int, void (*)(void *), void *)> deliver;
+      const char *, int, std::function<void(void *)>, void *)> deliver;
 
   // Constructor.
   SprinklerSocket(int skt,
       std::function<int(SprinklerSocket *)> input,
       std::function<int(SprinklerSocket *)> output,
       std::function<void(SprinklerSocket *,
-        const char *, int, void (*)(void *), void *)> deliver,
+        const char *, int, std::function<void(void *)>, void *)> deliver,
       const std::string &descr)
-      : skt(skt),
-        input(input), output(output), deliver(deliver),
-        descr(descr) {
+    : skt(skt),
+      input(input), output(output), deliver(deliver),
+      descr(descr) {
     first = true;
     sndbuf_size = rcvbuf_size = 0;
     ctrl_offset = ctrl_remainder = 0;
