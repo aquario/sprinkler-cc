@@ -45,6 +45,15 @@ class SprinklerNode {
   void deliver(SprinklerSocket *ss,
       const char *, int, std::function<void(void *)>, void *);
 
+  // Message types.
+  enum MessageTypes {
+    M_WEL = 0,  // Welcome message upon connected.
+    M_ADV,      // Advertisements.
+    M_SUB,      // Subscribe.
+    M_UNSUB,    // Unsubscribe.
+    M_DATA,     // Events data.
+  };
+
   // A list of possible roles
   static const int kClient = 0;
   static const int kProxy = 1;
