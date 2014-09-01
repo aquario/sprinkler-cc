@@ -10,18 +10,19 @@ DEFINE_int32(peer_port, 0, "Port number for peer node.");
 TransportLayer *tl;
 bool sent, received;
 
-void outgoing(SprinklerSocket *ss) {
+void outgoing(const std::string &host, int port) {
   LOG(INFO) << "outgoing";
-  tl->async_send_message(ss, "hello", 5, true, NULL, NULL);
+  tl->async_send_message(host, port, (const uint8_t *) "hello", 5,
+      true, NULL, NULL);
   sent = true;
 }
 
-void deliver(SprinklerSocket *ss,
-    const char *data, int size, void (*release)(void *), void *arg) {
-  CHECK_STREQ(data, "hello");
+void deliver(const uint8_t *data, int size,
+    std::function<void(void *)> release, void *arg) {
+  CHECK_STREQ((char *) data, "hello");
   LOG(INFO) << "deliver: got " << size << " bytes: " << data;
   received = true;
-  (*release)(arg);
+  release(arg);
 }
 
 void TestWelcomeMessage() {

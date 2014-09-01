@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include <functional>
+#include <string>
 
 #include <glog/logging.h>
 
@@ -15,9 +16,9 @@
 #endif
 
 TransportLayer::TransportLayer(int id,
-      std::function<void(SprinklerSocket *)> outgoing,
-      std::function<void(SprinklerSocket *,
-          const char *, int, std::function<void(void *)>, void *)> deliver) {
+      std::function<void(const std::string &, int)> outgoing,
+      std::function<void(const uint8_t *, int,
+          std::function<void(void *)>, void *)> deliver) {
   id_ = id;
   outgoing_ = outgoing;
   deliver_ = deliver;
@@ -28,7 +29,7 @@ TransportLayer::TransportLayer(int id,
   sockets_ = std::list<SprinklerSocket>();
   nsockets_ = 0;
 
-  addr_list_ = std::list<SocketAddr>();
+  addr_list_ = std::unordered_map<std::string, SocketAddr>();
 
   LOG(INFO) << "Created Sprinkler node with id " << id_;
 }
@@ -48,23 +49,21 @@ int64_t TransportLayer::uptime() {
 SprinklerSocket *TransportLayer::add_socket(int skt,
     std::function<int(SprinklerSocket *)> input,
     std::function<int(SprinklerSocket *)> output,
-    std::function<void(SprinklerSocket *,
-      const char *, int, std::function<void(void *)>, void *)> deliver,
-    const std::string &descr) {
-  SprinklerSocket ss(skt, input, output, deliver, descr);
+    std::function<void(const uint8_t *, int,
+        std::function<void(void *)>, void *)> deliver,
+    const std::string &descr, std::string host, int port) {
+  SprinklerSocket ss(skt, input, output, deliver, descr, host, port);
   ss.init();
 
   sockets_.push_back(ss);
   ++nsockets_;
 
-  // TODO(haoyan): this is really ugly ...
-  CHECK(&(*sockets_.rbegin()));
   return &(*sockets_.rbegin());
 }
 
 void TransportLayer::async_socket_send(
-    SprinklerSocket *ss, const char *data, int size, bool is_ctrl,
-    void (*cleanup)(void *env), void *env) {
+    SprinklerSocket *ss, const uint8_t *data, int size, bool is_ctrl,
+    std::function<void(void *)> cleanup, void *env) {
   LOG(INFO) << "async_socket_send: send " << size << " bytes.";
   CHECK(ss);
 
@@ -97,7 +96,7 @@ int TransportLayer::prepare_iovec(const std::list<Chunk> &cqueue, int offset,
         offset -= cit->size;
       } else {
         iov[iovlen].iov_base =
-            static_cast<void *>(const_cast<char *>(cit->data + offset));
+            static_cast<void *>(const_cast<uint8_t *>(cit->data + offset));
         iov[iovlen].iov_len = cit->size - offset;
         iovlen++;
         total += cit->size - offset;
@@ -120,7 +119,7 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
   // If it's the first time, notify the protocol layer that there is an
   // outgoing connection.
   if (ss->first) {
-    outgoing_(ss);
+    outgoing_(ss->host, ss->port);
   }
 
   // If it's the first time, stop here.
@@ -190,18 +189,22 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
   return 1;
 }
 
-int TransportLayer::do_recv(int skt, char *data, int size) {
-  return recv(skt, data, size, 0);
+int TransportLayer::do_recv(int skt, uint8_t *data, int size) {
+  return recv(skt, static_cast<uint8_t *>(data), size, 0);
 }
 
 void TransportLayer::release_chunk(void *chunk) {
   dfree(chunk);
 }
 
+std::string TransportLayer::get_endpoint(std::string host, int port) {
+  return std::to_string(port) + "|" + host;
+}
+
 int TransportLayer::recv_ready(SprinklerSocket *ss) {
   LOG(INFO) << "recv_ready";
   if (ss->recv_buffer == NULL) {
-    ss->recv_buffer = static_cast<char *>(dcalloc(MAX_CHUNK_SIZE, 1));
+    ss->recv_buffer = static_cast<uint8_t *>(dcalloc(MAX_CHUNK_SIZE, 1));
     ss->received = 0;
   }
 
@@ -249,8 +252,8 @@ int TransportLayer::recv_ready(SprinklerSocket *ss) {
 
   // If we received exactly one chunk, deliver it without copying.
   if (size == ss->received) {
-    ss->recv_buffer = static_cast<char *>(drealloc(ss->recv_buffer, size));
-    ss->deliver(ss, ss->recv_buffer + 4, size - 4,
+    ss->recv_buffer = static_cast<uint8_t *>(drealloc(ss->recv_buffer, size));
+    ss->deliver(ss->recv_buffer + 4, size - 4,
         release_chunk, ss->recv_buffer);
     ss->recv_buffer = 0;
     return 1;
@@ -260,9 +263,9 @@ int TransportLayer::recv_ready(SprinklerSocket *ss) {
   int offset = 0, remainder = 0;
   do {
     // Deliver a part of the chunk.
-    char *copy = static_cast<char *>(dmalloc(size - 4));
+    uint8_t *copy = static_cast<uint8_t *>(dmalloc(size - 4));
     memcpy(copy, ss->recv_buffer + offset + 4, size - 4);
-    ss->deliver(ss, copy, size - 4, release_chunk, copy);
+    ss->deliver(copy, size - 4, release_chunk, copy);
     offset += size;
 
     // See how much is left.
@@ -313,7 +316,7 @@ int TransportLayer::got_client(SprinklerSocket *ss) {
   add_socket(clt,
       std::bind(&TransportLayer::recv_ready, this, std::placeholders::_1),
       std::bind(&TransportLayer::send_ready, this, std::placeholders::_1),
-      deliver_, kSocIn);
+      deliver_, kSocIn, "", 0);
   return 1;
 }
 
@@ -350,7 +353,7 @@ void TransportLayer::tl_listen(int port) {
   }
   add_socket(skt,
       std::bind(&TransportLayer::got_client, this, std::placeholders::_1),
-      NULL, NULL, kSocListen);
+      NULL, NULL, kSocListen, "", 0);
 }
 
 bool TransportLayer::get_inet_address(struct sockaddr_in *sin,
@@ -374,33 +377,31 @@ bool TransportLayer::get_inet_address(struct sockaddr_in *sin,
   return true;
 }
 
-void TransportLayer::register_peer(const char *host, int port) {
+void TransportLayer::register_peer(const std::string &host, int port) {
   struct sockaddr_in sin;
 
   // Convert the host name and port into an actual TCP/IP address.
-  if (!get_inet_address(&sin, host, port)) {
+  if (!get_inet_address(&sin, host.c_str(), port)) {
     LOG(ERROR) << "register_node: bad host (" << host << ") or port ("
         << port << ")";
     return;
   }
 
+  std::string endpoint = get_endpoint(host, port);
+
   // See if this address is already in the list.
-  for (std::list<SocketAddr>::iterator sit = addr_list_.begin();
-       sit != addr_list_.end();
-       ++sit) {
-    if (memcmp(&sin, &sit->sin, sizeof(sin)) == 0) {
-      LOG(WARNING) << "register_node: " << host << ":" << port
-          << " already existed.";
-      return;
-    }
+  if (addr_list_.find(endpoint) != addr_list_.end()) {
+    LOG(WARNING) << "register_node: " << host << ":" << port
+      << " already existed.";
+    return;
   }
 
   // Add the new entry to the list.
-  addr_list_.push_back(SocketAddr());
-  SocketAddr &soc_addr = *addr_list_.rbegin();
-
-  soc_addr.sin = sin;
-  soc_addr.in = soc_addr.out = NULL;
+  SocketAddr socket_addr;
+  socket_addr.sin = sin;
+  socket_addr.host = host;
+  socket_addr.port = port;
+  addr_list_[endpoint] = socket_addr;
 }
 
 void TransportLayer::try_connect(SocketAddr *socket_addr) {
@@ -441,23 +442,33 @@ void TransportLayer::try_connect(SocketAddr *socket_addr) {
     socket_addr->out = add_socket(skt,
         std::bind(&TransportLayer::recv_ready, this, std::placeholders::_1),
         std::bind(&TransportLayer::send_ready, this, std::placeholders::_1),
-        deliver_, kSocOut);
+        deliver_, kSocOut, socket_addr->host, socket_addr->port);
   }
 }
 
 void TransportLayer::try_connect_all() {
   LOG(INFO) << "try_connect_all";
-  for (std::list<SocketAddr>::iterator sit = addr_list_.begin();
-       sit != addr_list_.end();
-       ++sit) {
-    try_connect(&*sit);
+  std::unordered_map<std::string, SocketAddr>::iterator sit;
+  for (sit = addr_list_.begin(); sit != addr_list_.end(); ++sit) {
+    try_connect(&sit->second);
   }
 }
 
-void TransportLayer::async_send_message(SprinklerSocket *ss,
-    const char *bytes, int len, bool is_ctrl,
-    void (*cleanup)(void *env), void *env) {
-  char *hdr = static_cast<char *>(dcalloc(4, 1));
+void TransportLayer::async_send_message(const std::string &host, int port,
+    const uint8_t *bytes, int len, bool is_ctrl,
+    std::function<void(void *)> cleanup, void *env) {
+  std::string endpoint = get_endpoint(host, port);
+  // There should be an entry for this endpoint.
+  CHECK_EQ(addr_list_.count(endpoint), 1);
+  SocketAddr &sock_addr = addr_list_[endpoint];
+  SprinklerSocket *ss = sock_addr.out;
+  if (ss == NULL) {
+    LOG(INFO) << "No connection, recoonect to " << host << ":" << port;
+    try_connect(&sock_addr);
+    ss = sock_addr.out;
+  }
+
+  uint8_t *hdr = static_cast<uint8_t *>(dcalloc(4, 1));
 
   len += 4;
   hdr[0] = len & 0xFF;
@@ -573,6 +584,15 @@ void TransportLayer::remove_closed_sockets() {
   std::list<SprinklerSocket>::iterator sit = sockets_.begin();
   while (sit != sockets_.end()) {
     if (sit->skt == -1) {
+      // Remove the outgoing socket tracker on address list.
+      if (sit->port != 0) {
+        std::string endpoint = get_endpoint(sit->host, sit->port);
+        if (addr_list_.count(endpoint) == 1) {
+          addr_list_[endpoint].out = NULL;
+          break;
+        }
+      }
+
       sit = sockets_.erase(sit);
       nsockets_--;
     } else {
