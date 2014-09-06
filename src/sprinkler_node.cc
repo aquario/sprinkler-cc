@@ -23,7 +23,9 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
       if (role_ & kTail) {
         release(env);
       } else {
-        // TODO(haoyan): forward_message(data, release, env);
+        // Forward the message to the next node in the chain.
+        tl_.async_send_message(proxies_[0].host, proxies_[0].port,
+            data, size, true, release, data);
       }
       break;
     case kSubMsg:
