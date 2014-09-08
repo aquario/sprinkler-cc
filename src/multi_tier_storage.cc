@@ -7,11 +7,13 @@
 struct MemBuffer {
   int64_t begin_seq, end_seq;
   int64_t begin_offset, end_offset;
+  bool is_empty;
   uint8_t *chunk;
 
   MemBuffer() {
     begin_seq = end_seq = 1;
     begin_offset = end_offset = 0;
+    is_empty = true;
     chunk = static_cast<uint8_t *>(dcalloc(kMemBufSize, 1));
   }
 
@@ -63,8 +65,9 @@ int64_t MultiTierStorage::put_raw_events(
     }
   }
 
-  // Finally, set the new end_offset.
-  mem_store[sid].end_offset = end_offset;
+  // Finally, set the new end_offset and empty flag.
+  mem_store_[sid].end_offset = end_offset;
+  mem_store_[sid].is_empty = false;
 }
 
 int64_t MultiTierStorage::put_events(int sid, int64_t nevents, uint8_t *data) {
@@ -105,12 +108,13 @@ int64_t MultiTierStorage::put_events(int sid, int64_t nevents, uint8_t *data) {
         nevents * kEventLen - (kMembufSize - end_offset));
   }
 
-  // Set new offset & seq#
+  // Set new offset, seq#, and empty flag.
   end_offset += nevents * kEventLen;
   mem_store_[sid].end_offset = (end_offset < kMemBufSize
       ? end_offset
       : end_offseta - kMemBufSize);
   mem_store_[sid].end_pos = get_end_seq(data + (nevents - 1) * kEventLen);
+  mem_store_[sid].is_empty = false;
 }
 
 int64_t MultiTierStorage::get_events(
@@ -119,6 +123,10 @@ int64_t MultiTierStorage::get_events(
 }
 
 int64_t MultiTierStorage::get_free_space(const MemBuffer &membuf) {
+  if (membuf.is_empty) {
+    return kMemBufSize;
+  }
+
   if (membuf.begin_offset < membuf.end_offset) {
     return kMemBufSize - (membuf.end_offset - membuf.begin_offset);
   } else {
