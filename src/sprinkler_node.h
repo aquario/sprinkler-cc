@@ -62,10 +62,6 @@ class SprinklerNode {
   // Upcall on receiving a message.
   void deliver(const uint8_t *, int, std::function<void(void *)>, void *);
   
-  // Conversion between uint64_t and byte array.
-  static void itos(uint8_t *dst, uint64_t val, int len);
-  static uint64_t stoi(const uint8_t *src, int len);
-
   // Broadcast advertisement messages to all peer proxies.
   void send_adv_message();
   // Construct an advertisement message.  Assumes that dst points to an

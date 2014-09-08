@@ -3,6 +3,8 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
+#include "sprinkler_common.h"
+
 void SprinklerNode::outgoing(const std::string &host, int port) {
   // Do nothing if this is a proxy.
   // TODO(haoyan): register host:port for shuffling if this is a client.
@@ -45,21 +47,6 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
     default:
       LOG(ERROR) << "Unrecognized message type: " << msg_type;
   }
-}
-
-void SprinklerNode::itos(uint8_t *dst, uint64_t val, int len) {
-  for (int i = 0; i < 8; ++i) {
-    *dst++ = static_cast<uint8_t>(val & 0xff);
-    val >>= 8;
-  }
-}
-
-uint64_t SprinklerNode::stoi(const uint8_t *src, int len) {
-  uint64_t result = 0;
-  for (int i = 0; i < len; ++i) {
-    result |= (static_cast<uint64_t>(*src)) << (i * 8);
-  }
-  return result;
 }
 
 void SprinklerNode::send_adv_message() {
