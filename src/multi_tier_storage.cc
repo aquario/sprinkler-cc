@@ -118,7 +118,7 @@ int64_t MultiTierStorage::put_events(int sid, int64_t nevents, uint8_t *data) {
 }
 
 int64_t MultiTierStorage::get_events(
-    int sid, int64_t max_events, uint8_t *buffer) {
+    int sid, int64_t first_seq, int64_t max_events, uint8_t *buffer) {
   // TODO(haoyan).
 }
 

@@ -31,7 +31,8 @@ class MultiTierStorage {
 
   // Retrieve events from a stream.
   // Return #events fetched into buffer.
-  int64_t get_events(int sid, int64_t max_events, uint8_t *buffer);
+  int64_t get_events(int sid, int64_t first_seq, int64_t max_events,
+      uint8_t *buffer);
 
  private:
   // In-memory buffer for a stream.
