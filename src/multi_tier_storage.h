@@ -44,9 +44,16 @@ class MultiTierStorage {
   // Returns amount of free space available in a MemBuffer, in bytes.
   int64_t get_free_space(const MemBuffer &membuf);
 
-  // Returns the offset in a sequence of events such that seq fits into the
+  // Returns the offset in an array of events such that seq fits into the
   // event at that offset, or -1 in case no event fits.
-  int64_t adjust_offset(int64_t seq, int64_t nevents, const uint8_t *chunk);
+  int64_t adjust_offset_linear(int64_t seq, int64_t nevents,
+      const uint8_t *chunk);
+
+  // Returns the offset in a circular array (data chunk in a MemBuffer struct)
+  // such that seq fits into the event at that offset, or -1 in case no event
+  // fits.
+  int64_t adjust_offset_circular(int64_t seq, int64_t nevents,
+      const uint8_t *chunk);
 
   // #streams.
   int nstreams_;

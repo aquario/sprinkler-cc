@@ -82,7 +82,7 @@ int64_t MultiTierStorage::put_events(int sid, int64_t nevents, uint8_t *data) {
 
   // Find offset to the first event that is needed.
   if (!in_range(data, end_seq)) {
-    int64_t fit_offset = adjust_offset(end_seq, nevents, data);
+    int64_t fit_offset = adjust_offset_linear(end_seq, nevents, data);
     if (fit_offset == -1) {
       LOG(WARNING) << "Got out of range events starting at "
           << get_begin_seq(data);
@@ -134,7 +134,7 @@ int64_t MultiTierStorage::get_free_space(const MemBuffer &membuf) {
   }
 }
 
-int64_t MultiTierStorage::adjust_offset(
+int64_t MultiTierStorage::adjust_offset_linear(
     int64_t seq, int64_t nevents, const uint8_t *chunk) {
   int64_t lo = 0;
   int64_t hi = (nevents - 1) * kEventLen;
@@ -147,6 +147,40 @@ int64_t MultiTierStorage::adjust_offset(
     if (get_begin_seq(chunk + mid) > seq) {
       hi = mid - kEventLen;
     } else if (get_end_seq(chunk + mid) <= seq) {
+      lo = mid + kEventLen;
+    }
+  }
+  return -1;
+}
+
+int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
+    int64_t begin, int64_t end, const uint8_t *chunk) {
+
+  if (begin < end) {
+    int64_t nevents = (end - begin) / kEventLen;
+    int64_t result = adjust_offset_linear(seq, nevents, chunk + begin);
+    if (result != -1) {
+      result += begin;
+    }
+    return result;
+  }
+
+  int64_t lo = begin;
+  int64_t hi = end + kMemBufSize;
+
+  while (lo <= hi) {
+    int64_t mid = (lo + hi) >> 1;   // div 2.
+    int64_t idx = mid;
+    if (idx >= kMemBufSize) {
+      idx -= kMemBufSize;
+    }
+
+    if (in_range(chunk + idx, seq)) {
+      return idx;
+    }
+    if (get_begin_seq(chunk + idx) > seq) {
+      hi = mid - kEventLen;
+    } else if (get_end_seq(chunk + idx) <= seq) {
       lo = mid + kEventLen;
     }
   }
