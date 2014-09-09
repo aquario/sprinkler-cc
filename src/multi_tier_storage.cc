@@ -113,13 +113,57 @@ int64_t MultiTierStorage::put_events(int sid, int64_t nevents, uint8_t *data) {
   mem_store_[sid].end_offset = (end_offset < kMemBufSize
       ? end_offset
       : end_offseta - kMemBufSize);
-  mem_store_[sid].end_pos = get_end_seq(data + (nevents - 1) * kEventLen);
+  mem_store_[sid].end_seq = get_end_seq(data + (nevents - 1) * kEventLen);
   mem_store_[sid].is_empty = false;
 }
 
 int64_t MultiTierStorage::get_events(
     int sid, int64_t first_seq, int64_t max_events, uint8_t *buffer) {
-  // TODO(haoyan).
+  // first_seq is too large.
+  if (first_seq >= mem_store_[sid].end_seq) {
+    return kErrFuture;
+  }
+
+  // first_seq is not in memory.
+  if (first_seq < mem_store_[sid].begin_seq) {
+    // If we don't keep the complete history for this stream on disk, returns
+    // an error code.
+    if (stream_index_.count(sid) == 0) {
+      return kErrPast;
+    }
+
+    // TODO(haoyan): Otherwise, fetch events from disk.
+  } else {
+    // Everything wanted is in-memory.
+    // First, determine the memory range needs to copy.
+    int64_t begin_offset = adjust_offset_circular(first_seq,
+        mem_store_[sid].begin_offset, mem_store_[sid].end_offset,
+        mem_store_[sid].chunk);
+    int64_t end_offset = mem_store_[sid].end_offset
+    int64_t nevents = (end_offset > begin_offset
+        ? (end_offset - begin_offset) / kEventLen
+        : (kMemBufSize - (begin_offset - end_offset)) / kEventLen);
+    if (nevents > max_events) {
+      nevents = max_events;
+      end_offset = begin_offset + nevents * kEventLen;
+      if (end_offset >= kMemBufSize) {
+        end_offset -= kMemBufSize;
+      }
+    }
+
+    // Next, copy events into buffer.
+    if (end_offset > begin_offset) {
+      memmove(buffer, mem_store_[sid].chunk + begin_offset,
+          end_offset - begin_offset);
+    } else {
+      memmove(buffer, mem_store_[sid].chunk + begin_offset,
+          kMemBufSize - begin_offset);
+      memmove(buffer + (kMemBufSize - begin_offset),
+          mem_store_[sid].chunk, end_offset);
+    }
+
+    return nevents;
+  }
 }
 
 int64_t MultiTierStorage::get_free_space(const MemBuffer &membuf) {

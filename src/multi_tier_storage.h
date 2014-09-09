@@ -34,6 +34,10 @@ class MultiTierStorage {
   int64_t get_events(int sid, int64_t first_seq, int64_t max_events,
       uint8_t *buffer);
 
+  // Error codes.
+  static const int64_t kErrFuture = -1;  // Asked for a future seq#.
+  static const int64_t kErrPast = -2;  // Asked for a seq# that is discarded.
+
  private:
   // In-memory buffer for a stream.
   struct MemBuffer;
