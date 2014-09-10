@@ -16,13 +16,8 @@
 // at this node.
 class MultiTierStorage {
  public:
-  MultiTierStorage(int nstreams) : nstreams_(nstreams), mem_store_(nstreams) {}
-
-  // Set up various configuration parameters.  This method is called when the
-  // head node of a chain reads the configuration file, or when a non-head node
-  // receives a configure message from its predecessor.
-  //
-  void init(const std::vector<int> &sids);
+  MultiTierStorage(int nstreams)
+    : nstreams_(nstreams), mem_store_(nstreams), next_chunk_no_(nstreams, 0) {}
 
   // Add a block of raw events from a client.
   // "data" here contains only messages, no header is included.
@@ -91,13 +86,10 @@ class MultiTierStorage {
 
   // In-memory buffer for all streams.
   std::vector<MemBuffer> mem_store_;
-  // #streams on disk.
-  int nstreams_on_disk_;
   // Next chunk# to assign for each stream stored on disk.
   std::vector<int64_t> next_chunk_no_;
   // Filenames for streams stored on this node.
   std::vector< std::deque<std::string> > chunk_no_;
-  // TODO(haoyan): enable an additional layer of permanent storage.
 };
 
 #endif  // MULTI_TIER_STORAGE_H_

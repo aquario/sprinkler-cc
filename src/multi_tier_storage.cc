@@ -6,18 +6,6 @@
 
 #include "sprinkler_common.h"
 
-void MultiTierStorage::init(const std::vector<int> &sids) {
-  // Construct the mapping (stream_id -> array_index).
-  // sids -- a list of streams that will be stored permanently on this node.
-  nstreams_on_disk_ = sids.size();
-  stream_index_.clear();
-  for (int i = 0; i < sids.size(); ++i) {
-    stream_index_[sids[i]] = i;
-  }
-
-  next_chunk_no_ = std::vector<int64_t>(nstreams_on_disk_, 0);
-}
-
 void MultiTierStorage::put_raw_events(
     int sid, int64_t nevents, const uint8_t *data) {
   if (nevents == 0) {
@@ -26,10 +14,8 @@ void MultiTierStorage::put_raw_events(
   }
   CHECK_NOTNULL(data);
 
-  if (stream_index_.count(sid) == 1 &&
-      get_free_space(mem_store_[sid]) < nevents * kEventLen) {
-    // Not enough space and we want to keep all events, so flush
-    // something to disk.
+  // Not enough space, flush something to disk.
+  if (get_free_space(mem_store_[sid]) < nevents * kEventLen) {
     flush_to_disk(sid);
   }
 
@@ -82,10 +68,8 @@ void MultiTierStorage::put_events(
     nevents -= fit_offset / kEventLen;
   }
 
-  if (stream_index_.count(sid) == 1 &&
-      get_free_space(mem_store_[sid]) < nevents * kEventLen) {
-    // Not enough space and we want to keep all events, so flush
-    // something to disk.
+  // Not enough space, flush something to disk.
+  if (get_free_space(mem_store_[sid]) < nevents * kEventLen) {
     flush_to_disk(sid);
   }
 
@@ -117,13 +101,7 @@ int64_t MultiTierStorage::get_events(
 
   // first_seq is not in memory.
   if (first_seq < mem_store_[sid].begin_seq) {
-    // If we don't keep the complete history for this stream on disk, returns
-    // an error code.
-    if (stream_index_.count(sid) == 0) {
-      return kErrPast;
-    }
-
-    // TODO(haoyan): Otherwise, fetch events from disk.
+    // TODO(haoyan): Fetch events from disk.
     return kErrPast;
   } else {
     // Everything wanted is in-memory.
@@ -226,9 +204,22 @@ int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
 }
 
 void MultiTierStorage::flush_to_disk(int sid) {
-  int idx = stream_index_[sid];
+  int64_t begin_offset = mem_store_[sid].begin_offset;
+  uint8_t *ptr = mem_store_[sid].chunk;
+  int unit_size = sizeof(uint8_t);
+
+  std::string filename = get_chunk_name(sid, next_chunk_no_[sid]);
+  FILE *fout = fopen(filename.c_str(), "wb");
 
   if (mem_store_[sid].begin_offset + kDiskChunkSize <= kMemBufSize) {
-    // TODO(haoyan).
+    // No carry-over, a single write is sufficient.
+    fwrite(ptr + begin_offset, unit_size, kDiskChunkSize, fout);
+  } else {
+    // Two writes.
+    fwrite(ptr + begin_offset, unit_size, kMemBufSize - begin_offset, fout);
+    fwrite(ptr, unit_size, kDiskChunkSize - (kMemBufSize - begin_offset), fout);
   }
+
+  fclose(fout);
+  ++next_chunk_no_[sid];
 }
