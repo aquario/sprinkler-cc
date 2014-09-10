@@ -16,9 +16,12 @@ void SprinklerNode::run(int64_t duration) {
     
     if (now > time_to_adv_) {
       send_adv_message();
+      time_to_adv_ += kAdvPeriod;
     }
 
     if (now > time_to_pub_) {
+      proxy_publish();
+      time_to_pub_ += kPubPeriod;
     }
   }
 }

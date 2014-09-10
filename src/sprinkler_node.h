@@ -60,6 +60,7 @@ class SprinklerNode {
       storage_(nstreams),
       time_to_adv_(kAdvPeriod), time_to_pub_(kPubPeriod) {}
 
+  // Main loop of Sprinkler proxy.
   void run(int64_t duration);
 
  private:
