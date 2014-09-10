@@ -15,11 +15,12 @@
 #define IOV_MAX 1024
 #endif
 
-TransportLayer::TransportLayer(int id,
+TransportLayer::TransportLayer(int id, int port,
       std::function<void(const std::string &, int)> outgoing,
       std::function<void(const uint8_t *, int,
           std::function<void(void *)>, void *)> deliver) {
   id_ = id;
+  port_ = port;
   outgoing_ = outgoing;
   deliver_ = deliver;
   gettimeofday(&starttime_, 0);
@@ -320,7 +321,7 @@ int TransportLayer::got_client(SprinklerSocket *ss) {
   return 1;
 }
 
-void TransportLayer::tl_listen(int port) {
+void TransportLayer::tl_listen() {
   // Create and bind a socket.
   int skt = socket(PF_INET, SOCK_STREAM, 0);
   if (skt < 0) {
@@ -340,7 +341,7 @@ void TransportLayer::tl_listen(int port) {
   memset(&sin, 0, sizeof(sin));
   sin.sin_family = AF_INET;
   sin.sin_addr.s_addr = INADDR_ANY;
-  sin.sin_port = htons(port);
+  sin.sin_port = htons(port_);
   if (bind(skt, (struct sockaddr *) &sin, sizeof(sin)) < 0) {
     LOG(ERROR) << strerror(errno) << " listen: inet bind";
     close(skt);

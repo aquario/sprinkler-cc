@@ -47,13 +47,13 @@ struct SubInfo {
 
 class SprinklerNode {
  public:
-  SprinklerNode(int id, int role,
+  SprinklerNode(int id, int port, int role,
       int nproxies, const std::vector<Proxy> &proxies,
       int nstreams, const std::unordered_set<int> &sids,
       int64_t mem_buf_size, int64_t disk_chunk_size)
     : id_(id), role_(role),
       nproxies_(nproxies), proxies_(proxies),
-      tl_(id,
+      tl_(id, port,
           std::bind(&SprinklerNode::outgoing, this,
               std::placeholders::_1, std::placeholders::_2),
           std::bind(&SprinklerNode::deliver, this,

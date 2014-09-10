@@ -102,7 +102,7 @@ class TransportLayer {
  public:
   // Constructor that specifies the id of this Sprinkler node, and upcalls
   // to the protocol layer.
-  TransportLayer(int id,
+  TransportLayer(int id, int port,
       std::function<void(const std::string &, int)> outgoing,
       std::function<void(const uint8_t *, int,
           std::function<void(void *)>, void *)> deliver);
@@ -111,7 +111,7 @@ class TransportLayer {
   int64_t uptime();
 
   // Listen on a TCP port to wait for connections.
-  void tl_listen(int port);
+  void tl_listen();
 
   // Register a peer Sprinkler node available to connect.
   void register_peer(const std::string &host, int port);
@@ -208,6 +208,8 @@ class TransportLayer {
 
   // Proxy ID; unique across a deployment.
   int id_;
+  // Listening port.
+  int port_;
   // Linked list of sockets.
   std::list<SprinklerSocket> sockets_;
   // #sockets in the list.

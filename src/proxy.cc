@@ -10,6 +10,7 @@
 
 // Required parameters.
 DEFINE_int32(id, -1, "Unique ID to identify a Sprinkler proxy.");
+DEFINE_int32(port, 0, "Port that listens to incoming connections.");
 
 // Optional parameters.
 DEFINE_bool(on_disk, true, "Is on-disk storage enabled?");
@@ -37,6 +38,8 @@ int main(int argc, char **argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   // Must provide a non-negative proxy id.
   CHECK_GT(FLAGS_id, -1);
+  // Must provide a valid listening port.
+  CHECK_GE(FLAGS_port, 10000);
 
   std::string cfg_filename = kPxCfgPrefix + std::to_string(FLAGS_id);
   std::ifstream cfg_file(cfg_filename);
@@ -79,8 +82,8 @@ int main(int argc, char **argv) {
   // For convenience of alignment, it is set to be multiples of event length.
   int64_t mem_buf_size = (FLAGS_mem_cap / nstreams / kEventLen) * kEventLen;
 
-  SprinklerNode node(FLAGS_id, role, nproxies, proxies,
-      nstreams, local_streams, mem_buf_size, disk_chunk_size);
+  SprinklerNode node(FLAGS_id, FLAGS_port, role, nproxies, proxies,
+      nstreams, local_streams, mem_buf_size, FLAGS_disk_chunk_size);
   node.run(FLAGS_duration);
 
   return 0;

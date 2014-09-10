@@ -8,6 +8,9 @@
 
 #include "sprinkler_common.h"
 
+int64_t MultiTierStorage::mem_buf_size_;
+int64_t MultiTierStorage::disk_chunk_size_;
+
 void MultiTierStorage::put_raw_events(
     int sid, int64_t nevents, const uint8_t *data) {
   if (nevents == 0) {
@@ -225,10 +228,10 @@ void MultiTierStorage::flush_to_disk(int sid) {
   }
 
   fclose(fout);
-  chunk_no_[sid].push_back(next_chunk_no_[sid]);
+  used_chunk_no_[sid].push_back(next_chunk_no_[sid]);
   ++next_chunk_no_[sid];
 }
 
-std::string MultiTierStorage::get_chunk_name(int sid, chunk_id) {
+std::string MultiTierStorage::get_chunk_name(int sid, int64_t chunk_id) {
   return "chunk-" + std::to_string(sid) + "-" + std::to_string(chunk_id);
 }

@@ -78,7 +78,7 @@ class MultiTierStorage {
   void flush_to_disk(int sid);
 
   // Generate the name of next data chunk to be stored on disk.
-  std::string get_chunk_name(int sid, chunk_id);
+  std::string get_chunk_name(int sid, int64_t chunk_id);
 
   // #streams.
   int nstreams_;
@@ -95,7 +95,7 @@ class MultiTierStorage {
   // Next chunk# to assign for each stream stored on disk.
   std::vector<int64_t> next_chunk_no_;
   // Filenames for streams stored on this node.
-  std::vector< std::deque<std::string> > chunk_no_;
+  std::vector< std::deque<int64_t> > used_chunk_no_;
 };
 
 #endif  // MULTI_TIER_STORAGE_H_
