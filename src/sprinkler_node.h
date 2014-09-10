@@ -49,7 +49,8 @@ class SprinklerNode {
  public:
   SprinklerNode(int id, int role,
       int nproxies, const std::vector<Proxy> &proxies,
-      int nstreams, const std::unordered_set<int> &sids)
+      int nstreams, const std::unordered_set<int> &sids,
+      int64_t mem_buf_size, int64_t disk_chunk_size)
     : id_(id), role_(role),
       nproxies_(nproxies), proxies_(proxies),
       tl_(id,
@@ -59,7 +60,7 @@ class SprinklerNode {
               std::placeholders::_1, std::placeholders::_2,
               std::placeholders::_3, std::placeholders::_4)),
       nstreams_(nstreams), sub_info_(nstreams), local_streams_(sids),
-      storage_(nstreams),
+      storage_(nstreams, mem_buf_size, disk_chunk_size),
       time_to_adv_(kAdvPeriod), time_to_pub_(kPubPeriod) {}
 
   // Main loop of Sprinkler proxy.  Duration is the lifetime of this proxy,

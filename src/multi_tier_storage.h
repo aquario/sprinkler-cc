@@ -16,8 +16,11 @@
 // at this node.
 class MultiTierStorage {
  public:
-  MultiTierStorage(int nstreams)
-    : nstreams_(nstreams), mem_store_(nstreams), next_chunk_no_(nstreams, 0) {}
+  MultiTierStorage(int nstreams, int64_t mem_buf_size, int64_t disk_chunk_size)
+    : nstreams_(nstreams), mem_store_(nstreams), next_chunk_no_(nstreams, 0) {
+    mem_buf_size_ = mem_buf_size;
+    disk_chunk_size_ = disk_chunk_size;
+  }
 
   // Add a block of raw events from a client.
   // "data" here contains only messages, no header is included.
@@ -49,18 +52,13 @@ class MultiTierStorage {
       begin_seq = end_seq = 1;
       begin_offset = end_offset = 0;
       is_empty = true;
-      chunk = static_cast<uint8_t *>(dcalloc(kMemBufSize, 1));
+      chunk = static_cast<uint8_t *>(dcalloc(mem_buf_size_, 1));
     }
 
     ~MemBuffer() {
       dfree(chunk);
     }
   };
-
-  // Size of in-memory buffer for each stream in bytes.
-  static const int64_t kMemBufSize = 128 * (1 << 20);   // 128 MB.
-  // Size of an on-disk data chunk in bytes.
-  static const int64_t kDiskChunkSize = 16 * (1 << 20);
 
   // Returns amount of free space available in a MemBuffer, in bytes.
   int64_t get_free_space(const MemBuffer &membuf);
@@ -79,13 +77,21 @@ class MultiTierStorage {
   // Flush a chunk of in-memory buffer to disk.
   void flush_to_disk(int sid);
 
+  // Generate the name of next data chunk to be stored on disk.
+  std::string get_chunk_name(int sid, chunk_id);
+
   // #streams.
   int nstreams_;
   // Mapping from stream id to array index for permanent storage.
   std::unordered_map<int, int> stream_index_;
 
+  // Size of in-memory buffer for each stream in bytes.
+  static int64_t mem_buf_size_;
   // In-memory buffer for all streams.
   std::vector<MemBuffer> mem_store_;
+
+  // Size of an on-disk data chunk in bytes.
+  static int64_t disk_chunk_size_;
   // Next chunk# to assign for each stream stored on disk.
   std::vector<int64_t> next_chunk_no_;
   // Filenames for streams stored on this node.

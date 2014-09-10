@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include <string>
+
 #include <glog/logging.h>
 
 #include "sprinkler_common.h"
@@ -23,11 +25,11 @@ void MultiTierStorage::put_raw_events(
 
   // First, reset the memory region.
   int64_t end_offset = mem_store_[sid].end_offset;
-  if (end_offset + nevents * kEventLen <= kMemBufSize) {
+  if (end_offset + nevents * kEventLen <= mem_buf_size_) {
     memset(ptr + end_offset, 0, nevents * kEventLen);
   } else {
-    memset(ptr + end_offset, 0, kMemBufSize - end_offset);
-    memset(ptr, 0, nevents * kEventLen - (kMemBufSize - end_offset));
+    memset(ptr + end_offset, 0, mem_buf_size_ - end_offset);
+    memset(ptr, 0, nevents * kEventLen - (mem_buf_size_ - end_offset));
   }
 
   // Next, format events with seq#'s.
@@ -35,7 +37,7 @@ void MultiTierStorage::put_raw_events(
     itos(ptr + end_offset + 1, mem_store_[sid].end_seq++, 8);
     memmove(ptr + end_offset + 9, data + i * kEventLen, kRawEventLen);
     end_offset += kEventLen;
-    if (end_offset == kMemBufSize) {
+    if (end_offset == mem_buf_size_) {
       end_offset = 0;
     }
   }
@@ -75,19 +77,19 @@ void MultiTierStorage::put_events(
 
   // Copy the data over.
   uint8_t *ptr = mem_store_[sid].chunk;
-  if (end_offset + nevents * kEventLen <= kMemBufSize) {
+  if (end_offset + nevents * kEventLen <= mem_buf_size_) {
     memmove(ptr + end_offset, data, nevents * kEventLen);
   } else {
-    memmove(ptr + end_offset, data, kMemBufSize - end_offset);
-    memmove(ptr, data + (kMemBufSize - end_offset),
-        nevents * kEventLen - (kMemBufSize - end_offset));
+    memmove(ptr + end_offset, data, mem_buf_size_ - end_offset);
+    memmove(ptr, data + (mem_buf_size_ - end_offset),
+        nevents * kEventLen - (mem_buf_size_ - end_offset));
   }
 
   // Set new offset, seq#, and empty flag.
   end_offset += nevents * kEventLen;
-  mem_store_[sid].end_offset = (end_offset < kMemBufSize
+  mem_store_[sid].end_offset = (end_offset < mem_buf_size_
       ? end_offset
-      : end_offset - kMemBufSize);
+      : end_offset - mem_buf_size_);
   mem_store_[sid].end_seq = get_end_seq(data + (nevents - 1) * kEventLen);
   mem_store_[sid].is_empty = false;
 }
@@ -112,12 +114,12 @@ int64_t MultiTierStorage::get_events(
     int64_t end_offset = mem_store_[sid].end_offset;
     int64_t nevents = (end_offset > begin_offset
         ? (end_offset - begin_offset) / kEventLen
-        : (kMemBufSize - (begin_offset - end_offset)) / kEventLen);
+        : (mem_buf_size_ - (begin_offset - end_offset)) / kEventLen);
     if (nevents > max_events) {
       nevents = max_events;
       end_offset = begin_offset + nevents * kEventLen;
-      if (end_offset >= kMemBufSize) {
-        end_offset -= kMemBufSize;
+      if (end_offset >= mem_buf_size_) {
+        end_offset -= mem_buf_size_;
       }
     }
 
@@ -127,8 +129,8 @@ int64_t MultiTierStorage::get_events(
           end_offset - begin_offset);
     } else {
       memmove(buffer, mem_store_[sid].chunk + begin_offset,
-          kMemBufSize - begin_offset);
-      memmove(buffer + (kMemBufSize - begin_offset),
+          mem_buf_size_ - begin_offset);
+      memmove(buffer + (mem_buf_size_ - begin_offset),
           mem_store_[sid].chunk, end_offset);
     }
 
@@ -140,11 +142,11 @@ int64_t MultiTierStorage::get_events(
 
 int64_t MultiTierStorage::get_free_space(const MemBuffer &membuf) {
   if (membuf.is_empty) {
-    return kMemBufSize;
+    return mem_buf_size_;
   }
 
   if (membuf.begin_offset < membuf.end_offset) {
-    return kMemBufSize - (membuf.end_offset - membuf.begin_offset);
+    return mem_buf_size_ - (membuf.end_offset - membuf.begin_offset);
   } else {
     return membuf.begin_offset - membuf.end_offset;
   }
@@ -182,13 +184,13 @@ int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
   }
 
   int64_t lo = begin;
-  int64_t hi = end + kMemBufSize;
+  int64_t hi = end + mem_buf_size_;
 
   while (lo <= hi) {
     int64_t mid = (lo + hi) >> 1;   // div 2.
     int64_t idx = mid;
-    if (idx >= kMemBufSize) {
-      idx -= kMemBufSize;
+    if (idx >= mem_buf_size_) {
+      idx -= mem_buf_size_;
     }
 
     if (in_range(chunk + idx, seq)) {
@@ -211,15 +213,21 @@ void MultiTierStorage::flush_to_disk(int sid) {
   std::string filename = get_chunk_name(sid, next_chunk_no_[sid]);
   FILE *fout = fopen(filename.c_str(), "wb");
 
-  if (mem_store_[sid].begin_offset + kDiskChunkSize <= kMemBufSize) {
+  if (mem_store_[sid].begin_offset + disk_chunk_size_ <= mem_buf_size_) {
     // No carry-over, a single write is sufficient.
-    fwrite(ptr + begin_offset, unit_size, kDiskChunkSize, fout);
+    fwrite(ptr + begin_offset, unit_size, disk_chunk_size_, fout);
   } else {
     // Two writes.
-    fwrite(ptr + begin_offset, unit_size, kMemBufSize - begin_offset, fout);
-    fwrite(ptr, unit_size, kDiskChunkSize - (kMemBufSize - begin_offset), fout);
+    fwrite(ptr + begin_offset, unit_size, mem_buf_size_ - begin_offset, fout);
+    fwrite(ptr, unit_size,
+        disk_chunk_size_ - (mem_buf_size_ - begin_offset), fout);
   }
 
   fclose(fout);
+  chunk_no_[sid].push_back(next_chunk_no_[sid]);
   ++next_chunk_no_[sid];
+}
+
+std::string MultiTierStorage::get_chunk_name(int sid, chunk_id) {
+  return "chunk-" + std::to_string(sid) + "-" + std::to_string(chunk_id);
 }

@@ -14,12 +14,14 @@ DEFINE_int32(id, -1, "Unique ID to identify a Sprinkler proxy.");
 // Optional parameters.
 DEFINE_bool(on_disk, true, "Is on-disk storage enabled?");
 DEFINE_int64(mem_cap, 1 << 31, "Total size of in-memory buffer, 2 GB default.");
+DEFINE_int64(disk_chunk_size, 1 << 24,
+    "Size of an on-disk data chunk, 16 MB default.");
 DEFINE_int64(duration, 0,
     "Lifetime of the proxy in seconds, 0 means infinite.");
 
 // Prefix of proxy configuration file.  To get the full name, append the proxy
 // id to the end of this prefix.
-const std::string kPxCfgPrefix = "proxy_config_";
+const std::string kPxCfgPrefix = "proxy-config-";
 
 // Format of a proxy configuration file:
 //   <role>
@@ -73,8 +75,12 @@ int main(int argc, char **argv) {
 
   cfg_file.close();
 
-  SprinklerNode node(FLAGS_id, role,
-      nproxies, proxies, nstreams, local_streams);
+  // Determine the size of in-memory buffer per stream.
+  // For convenience of alignment, it is set to be multiples of event length.
+  int64_t mem_buf_size = (FLAGS_mem_cap / nstreams / kEventLen) * kEventLen;
+
+  SprinklerNode node(FLAGS_id, role, nproxies, proxies,
+      nstreams, local_streams, mem_buf_size, disk_chunk_size);
   node.run(FLAGS_duration);
 
   return 0;
