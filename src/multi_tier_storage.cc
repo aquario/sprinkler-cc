@@ -104,6 +104,7 @@ int64_t MultiTierStorage::get_events(
   // first_seq is not in memory.
   if (first_seq < mem_store_[sid].begin_seq) {
     // TODO(haoyan): Fetch events from disk.
+    LOG(WARNING) << "Data not found in memory.";
     return kErrPast;
   } else {
     // Everything wanted is in-memory.
