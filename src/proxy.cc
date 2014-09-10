@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
 
   SprinklerNode node(FLAGS_id, FLAGS_port, role, nproxies, proxies,
       nstreams, local_streams, mem_buf_size, FLAGS_disk_chunk_size);
-  node.run(FLAGS_duration);
+  node.start_proxy(FLAGS_duration);
 
   return 0;
 }

@@ -47,6 +47,7 @@ struct SubInfo {
 
 class SprinklerNode {
  public:
+  // Constructor for proxy.
   SprinklerNode(int id, int port, int role,
       int nproxies, const std::vector<Proxy> &proxies,
       int nstreams, const std::unordered_set<int> &sids,
@@ -63,9 +64,28 @@ class SprinklerNode {
       storage_(nstreams, mem_buf_size, disk_chunk_size),
       time_to_adv_(kAdvPeriod), time_to_pub_(kPubPeriod) {}
 
+  // Constructor for client.
+  SprinklerNode(int id, int port, int role, int sid,
+      const std::vector<Proxy> proxies)
+    : id_(id), role_(role), nproxies_(1), proxies_(proxies),
+      tl_(id, port,
+          std::bind(&SprinklerNode::outgoing, this,
+              std::placeholders::_1, std::placeholders::_2),
+          std::bind(&SprinklerNode::deliver, this,
+              std::placeholders::_1, std::placeholders::_2,
+              std::placeholders::_3, std::placeholders::_4)),
+      storage_(0, 0, 0), client_sid_(sid) {}
+
   // Main loop of Sprinkler proxy.  Duration is the lifetime of this proxy,
   // in seconds.
-  void run(int64_t duration);
+  void start_proxy(int64_t duration);
+
+  // Main loop of Sprinkler client.
+  // Args:
+  //  duration: the lifetime of this client in seconds;
+  //  interval: time between publishing two batches of events in microseconds;
+  //  batch_size: number of events per batch.
+  void start_client(int64_t duration, int interval, int batch_size);
 
   // A list of possible roles
   static const int kClient = 0;
@@ -100,17 +120,20 @@ class SprinklerNode {
   void handle_subscription(const uint8_t *data);
   void handle_unsubscription(const uint8_t *data);
 
-  // Publish events to subscribers.
+  // Proxy publishes events to other proxy subscribers.
+  // Message format:
+  //  |kPxPubMsg(1)|id(1)|sid(1)|nevents(8)|msg0(*)|msg1(*)|...|msgn(*)|
   void proxy_publish();
 
   // Add events published from peer proxies.
-  // Message format:
-  //  |kPxPubMsg(1)|id(1)|sid(1)|nevents(8)|msg0(*)|msg1(*)|...|msgn(*)|
   void handle_proxy_publish(const uint8_t *data);
 
-  // Add events published from local clients.
+  // Client publishes events to its local proxy.
   // Message format:
-  //  |kCliPubMsg(1)|cid(1)|sid(1)|nevents(8)|msg0(*)|msg1(*)|...|msgn(*)|
+  //  |kCliPubMsg(1)|cid(2)|sid(1)|nevents(8)|msg0(*)|msg1(*)|...|msgn(*)|
+  void client_publish(int batch_size);
+
+  // Add events published from local clients.
   void handle_client_publish(const uint8_t *data);
 
   // Release a chunk of memory.
@@ -171,6 +194,9 @@ class SprinklerNode {
   // Timers for periodical events.
   int64_t time_to_adv_;   // Time to broadcast advertisement messages.
   int64_t time_to_pub_;   // Time to publish events.
+
+  // For client: the stream it publishes to.
+  int client_sid_;
 };
 
 #endif  // SPRINKLER_NODE_H_

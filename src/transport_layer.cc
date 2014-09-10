@@ -455,7 +455,7 @@ void TransportLayer::try_connect_all() {
   }
 }
 
-void TransportLayer::async_send_message(const std::string &host, int port,
+bool TransportLayer::async_send_message(const std::string &host, int port,
     const uint8_t *bytes, int len, bool is_ctrl,
     std::function<void(void *)> cleanup, void *env) {
   std::string endpoint = get_endpoint(host, port);
@@ -464,9 +464,14 @@ void TransportLayer::async_send_message(const std::string &host, int port,
   SocketAddr &sock_addr = addr_list_[endpoint];
   SprinklerSocket *ss = sock_addr.out;
   if (ss == NULL) {
+    // If not connected, try to reconnect.
     LOG(INFO) << "No connection, recoonect to " << host << ":" << port;
     try_connect(&sock_addr);
     ss = sock_addr.out;
+    if (ss == NULL) {
+      // If reconnect failed ...
+      return false;
+    }
   }
 
   uint8_t *hdr = static_cast<uint8_t *>(dcalloc(4, 1));
@@ -477,6 +482,8 @@ void TransportLayer::async_send_message(const std::string &host, int port,
   hdr[2] = (len >> 16) & 0xFF;
   async_socket_send(ss, hdr, 4, is_ctrl, release_chunk, hdr);
   async_socket_send(ss, bytes, len - 4, is_ctrl, cleanup, env);
+
+  return true;
 }
 
 int TransportLayer::do_poll(struct pollfd fds[], nfds_t nfds, int timeout) {

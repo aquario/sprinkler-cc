@@ -117,7 +117,8 @@ class TransportLayer {
   void register_peer(const std::string &host, int port);
 
   // Send data to the given socket endpoint identified by (host, port).
-  void async_send_message(const std::string &host, int port,
+  // Return if the send is successful.
+  bool async_send_message(const std::string &host, int port,
       const uint8_t *bytes, int len, bool is_ctrl,
       std::function<void(void *)> cleanup, void *env);
 
