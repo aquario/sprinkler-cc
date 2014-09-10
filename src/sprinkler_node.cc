@@ -9,6 +9,8 @@ void SprinklerNode::run(int64_t duration) {
   // Convert duration to microseconds.
   duration *= 1000000;
 
+  tl_.tl_listen(proxies_[id_].port);
+
   for (;;) {
     int64_t now  = tl_.uptime();
 
