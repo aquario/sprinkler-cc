@@ -24,7 +24,7 @@ struct Proxy {
   std::string host;   // Hostname.
   int port;           // Port number.
 
-  Proxy(int id) : id(id), host(""), port(0) {}
+  Proxy() : id(-1), host(""), port(0) {}
 };
 
 // Subscription information for a stream.
@@ -47,21 +47,30 @@ struct SubInfo {
 
 class SprinklerNode {
  public:
-  SprinklerNode(int id, int role, int nproxies, int nstreams)
+  SprinklerNode(int id, int role,
+      int nproxies, const std::vector<Proxy> &proxies,
+      int nstreams, const std::unordered_set<int> &sids)
     : id_(id), role_(role),
-      nproxies_(nproxies),
+      nproxies_(nproxies), proxies_(proxies),
       tl_(id,
           std::bind(&SprinklerNode::outgoing, this,
               std::placeholders::_1, std::placeholders::_2),
           std::bind(&SprinklerNode::deliver, this,
               std::placeholders::_1, std::placeholders::_2,
               std::placeholders::_3, std::placeholders::_4)),
-      nstreams_(nstreams), sub_info_(nstreams),
+      nstreams_(nstreams), sub_info_(nstreams), local_streams_(sids),
       storage_(nstreams),
       time_to_adv_(kAdvPeriod), time_to_pub_(kPubPeriod) {}
 
-  // Main loop of Sprinkler proxy.
+  // Main loop of Sprinkler proxy.  Duration is the lifetime of this proxy,
+  // in seconds.
   void run(int64_t duration);
+
+  // A list of possible roles
+  static const int kClient = 0;
+  static const int kProxy = 1;
+  static const int kHead = 2;
+  static const int kTail = 4;
 
  private:
   // Upcall on establishing a connection.
@@ -116,11 +125,6 @@ class SprinklerNode {
     kCliPubMsg,   // Publish unformatted events from client.
   };
 
-  // A list of possible roles
-  static const int kClient = 0;
-  static const int kProxy = 1;
-  static const int kHead = 2;
-  static const int kTail = 4;
   // Threshold on changing subscription.
   static constexpr double kSubThd = 0.001;
   // Time intervals for periodical events in microseconds.

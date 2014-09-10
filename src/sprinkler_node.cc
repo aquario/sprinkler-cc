@@ -6,6 +6,9 @@
 #include "sprinkler_common.h"
 
 void SprinklerNode::run(int64_t duration) {
+  // Convert duration to microseconds.
+  duration *= 1000000;
+
   for (;;) {
     int64_t now  = tl_.uptime();
 
