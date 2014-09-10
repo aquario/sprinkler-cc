@@ -1,6 +1,8 @@
 #ifndef DMALLOC_H_
 #define DMALLOC_H_
 
+#include <stdlib.h>
+
 // #define MALLOC_DEBUG
 
 #ifdef MALLOC_DEBUG

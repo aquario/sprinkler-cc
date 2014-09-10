@@ -1,6 +1,8 @@
 #ifndef SPRINKLER_COMMON_H_
 #define SPRINKLER_COMMON_H_
 
+#include <stdint.h>
+
 // Length of a formatted Sprinkler event in bytes.
 // Format of a data event:
 //   |0(1)|seq#(8)|obj-id(8)|other-payload(15)|

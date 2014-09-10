@@ -18,12 +18,12 @@ uint64_t stoi(const uint8_t *src, int len) {
   return result;
 }
 
-inline int64_t get_begin_seq(const uint8_t *event) {
+int64_t get_begin_seq(const uint8_t *event) {
   // No matter what kind of event, this is always the right place.
   return static_cast<int64_t>(stoi(event + 1, 8));
 }
 
-inline int64_t get_end_seq(const uint8_t *event) {
+int64_t get_end_seq(const uint8_t *event) {
   if (*event == 0) {
     return static_cast<int64_t>(stoi(event + 1, 8)) + 1;
   } else {
@@ -31,7 +31,7 @@ inline int64_t get_end_seq(const uint8_t *event) {
   }
 }
 
-inline bool in_range(const uint8_t *event, int64_t seq) {
+bool in_range(const uint8_t *event, int64_t seq) {
   if (*event == 0) {
     return seq == get_begin_seq(event);
   } else {

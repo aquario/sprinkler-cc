@@ -10,7 +10,10 @@
 #include <unordered_set>
 #include <vector>
 
+#include "dmalloc.h"
+#include "sprinkler_common.h"
 #include "transport_layer.h"
+#include "multi_tier_storage.h"
 
 // Proxy/region configuration info.
 struct Proxy {
@@ -46,15 +49,18 @@ class SprinklerNode {
  public:
   SprinklerNode(int id, int role, int nproxies, int nstreams)
     : id_(id), role_(role),
-      nproxies_(nproxies), nstreams_(nstreams),
+      nproxies_(nproxies),
       tl_(id,
           std::bind(&SprinklerNode::outgoing, this,
               std::placeholders::_1, std::placeholders::_2),
           std::bind(&SprinklerNode::deliver, this,
               std::placeholders::_1, std::placeholders::_2,
-              std::placeholders::_3, std::placeholders::_4)) {
-        sub_info_ = std::vector<SubInfo>(nstreams);
-      }
+              std::placeholders::_3, std::placeholders::_4)),
+      nstreams_(nstreams), sub_info_(nstreams),
+      storage_(nstreams),
+      time_to_adv_(kAdvPeriod), time_to_pub_(kPubPeriod) {}
+
+  void run(int64_t duration);
 
  private:
   // Upcall on establishing a connection.
@@ -83,10 +89,18 @@ class SprinklerNode {
   void handle_subscription(const uint8_t *data);
   void handle_unsubscription(const uint8_t *data);
 
+  // Publish events to subscribers.
+  void proxy_publish();
+
+  // Add events published from peer proxies.
+  // Message format:
+  //  |kPxPubMsg(1)|id(1)|sid(1)|nevents(8)|msg0(*)|msg1(*)|...|msgn(*)|
+  void handle_proxy_publish(const uint8_t *data);
+
   // Add events published from local clients.
   // Message format:
-  //  |kPubMsg(1)|cid(1)|sid(1)|nevents(8)|msg0(*)|msg1(*)|...|msgn(*)|
-  void handle_publish(const uint8_t *data);
+  //  |kCliPubMsg(1)|cid(1)|sid(1)|nevents(8)|msg0(*)|msg1(*)|...|msgn(*)|
+  void handle_client_publish(const uint8_t *data);
 
   // Release a chunk of memory.
   static void release_chunk(void *);
@@ -97,8 +111,8 @@ class SprinklerNode {
     kAdvMsg,      // Advertisements.
     kSubMsg,      // Subscribe.
     kUnsubMsg,    // Unsubscribe.
-    kPubMsg,      // Publish (from client).
-    kDataMsg,     // Events data.
+    kPxPubMsg,    // Publish formatted events from proxy.
+    kCliPubMsg,   // Publish unformatted events from client.
   };
 
   // A list of possible roles
@@ -108,14 +122,22 @@ class SprinklerNode {
   static const int kTail = 4;
   // Threshold on changing subscription.
   static constexpr double kSubThd = 0.001;
+  // Time intervals for periodical events in microseconds.
+  static const int kAdvPeriod = 2 * 1000000;    // 2 seconds.
+  static const int kPubPeriod = 2 * 10000;      // 0.02 seconds.
+  // Max header length for any Sprinkler message.
+  static const int kMaxHeaderSize = 32;
+  // Max #events per message.
+  static const int kMaxEventsPerMsg =
+      (TransportLayer::kMaxChunkSize - kMaxHeaderSize) / kEventLen;
+  // Max #unformatted events per message.
+  static const int kMaxRawEventsPerMsg =
+      (TransportLayer::kMaxChunkSize - kMaxHeaderSize) / kRawEventLen;
 
   // Node ID; unique across a deployment.
   int id_;
   // The role of this node.
   int role_;
-
-  // Transport layer.
-  TransportLayer tl_;
 
   // #proxies.
   int nproxies_;
@@ -123,6 +145,9 @@ class SprinklerNode {
   // node in the chain; for tail of a chain, this is a list of head nodes
   // in other regions, indexed by their proxy IDs.
   std::vector<Proxy> proxies_;
+
+  // Transport layer.
+  TransportLayer tl_;
 
   // #streams.
   int nstreams_;
@@ -134,6 +159,12 @@ class SprinklerNode {
   // Streams that this proxy owns; usually a constant set.
   std::unordered_set<int> local_streams_;
 
+  // On-disk storage component.
+  MultiTierStorage storage_;
+
+  // Timers for periodical events.
+  int64_t time_to_adv_;   // Time to broadcast advertisement messages.
+  int64_t time_to_pub_;   // Time to publish events.
 };
 
 #endif  // SPRINKLER_NODE_H_

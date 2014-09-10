@@ -4,8 +4,11 @@
 #include <stdint.h>
 
 #include <deque>
+#include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "dmalloc.h"
 
 // Stores events received by a Sprinkler node.  An in-memory buffer stores most
 // recent events from every stream registered with the system, and an on-disk
@@ -13,24 +16,25 @@
 // at this node.
 class MultiTierStorage {
  public:
-  MultiTierStorage(int nstreams) : nstreams_(nstreams) {
-    mem_store_ = std::vector<MemBuffer>(nstreams);
-  }
+  MultiTierStorage(int nstreams) : nstreams_(nstreams), mem_store_(nstreams) {}
 
-  // Construct the mapping (stream_id -> array_index).
-  // sids -- a list of streams that will be stored permanently on this node.
-  void set_stream_index(const std::vector &sids);
+  // Set up various configuration parameters.  This method is called when the
+  // head node of a chain reads the configuration file, or when a non-head node
+  // receives a configure message from its predecessor.
+  //
+  void init(const std::vector<int> &sids);
 
   // Add a block of raw events from a client.
-  // Returns the least unused seq# after the put.
-  int64_t put_raw_events(int sid, int64_t nevents, uint8_t *data);
+  // "data" here contains only messages, no header is included.
+  void put_raw_events(int sid, int64_t nevents, const uint8_t *data);
 
   // Add a block of formatted events from a peer proxy.
-  // Returns the least unused seq# after the put.
-  int64_t put_events(int sid, int64_t nevents, uint8_t *data);
+  // "data" here contains only messages, no header is included.
+  void put_events(int sid, int64_t nevents, const uint8_t *data);
 
   // Retrieve events from a stream.
-  // Return #events fetched into buffer.
+  // Return #events fetched into buffer; or a negative value indicating a type
+  // of error.  See error code constants for error types.
   int64_t get_events(int sid, int64_t first_seq, int64_t max_events,
       uint8_t *buffer);
 
@@ -40,10 +44,28 @@ class MultiTierStorage {
 
  private:
   // In-memory buffer for a stream.
-  struct MemBuffer;
+  struct MemBuffer {
+    int64_t begin_seq, end_seq;
+    int64_t begin_offset, end_offset;
+    bool is_empty;
+    uint8_t *chunk;
+
+    MemBuffer() {
+      begin_seq = end_seq = 1;
+      begin_offset = end_offset = 0;
+      is_empty = true;
+      chunk = static_cast<uint8_t *>(dcalloc(kMemBufSize, 1));
+    }
+
+    ~MemBuffer() {
+      dfree(chunk);
+    }
+  };
 
   // Size of in-memory buffer for each stream in bytes.
   static const int64_t kMemBufSize = 128 * (1 << 20);   // 128 MB.
+  // Size of an on-disk data chunk in bytes.
+  static const int64_t kDiskChunkSize = 16 * (1 << 20);
 
   // Returns amount of free space available in a MemBuffer, in bytes.
   int64_t get_free_space(const MemBuffer &membuf);
@@ -56,18 +78,25 @@ class MultiTierStorage {
   // Returns the offset in a circular array (data chunk in a MemBuffer struct)
   // such that seq fits into the event at that offset, or -1 in case no event
   // fits.
-  int64_t adjust_offset_circular(int64_t seq, int64_t nevents,
-      const uint8_t *chunk);
+  int64_t adjust_offset_circular(int64_t seq,
+      int64_t begin, int64_t end, const uint8_t *chunk);
+
+  // Flush a chunk of in-memory buffer to disk.
+  void flush_to_disk(int sid);
 
   // #streams.
   int nstreams_;
   // Mapping from stream id to array index for permanent storage.
   std::unordered_map<int, int> stream_index_;
 
-  // In-memory buffer for all streams.  Use C-style array for efficiency.
+  // In-memory buffer for all streams.
   std::vector<MemBuffer> mem_store_;
+  // #streams on disk.
+  int nstreams_on_disk_;
+  // Next chunk# to assign for each stream stored on disk.
+  std::vector<int64_t> next_chunk_no_;
   // Filenames for streams stored on this node.
-  std::vector< std::deque<std::string> > filenames_;
+  std::vector< std::deque<std::string> > chunk_no_;
   // TODO(haoyan): enable an additional layer of permanent storage.
 };
 

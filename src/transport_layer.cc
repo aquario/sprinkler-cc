@@ -204,12 +204,12 @@ std::string TransportLayer::get_endpoint(std::string host, int port) {
 int TransportLayer::recv_ready(SprinklerSocket *ss) {
   LOG(INFO) << "recv_ready";
   if (ss->recv_buffer == NULL) {
-    ss->recv_buffer = static_cast<uint8_t *>(dcalloc(MAX_CHUNK_SIZE, 1));
+    ss->recv_buffer = static_cast<uint8_t *>(dcalloc(kMaxChunkSize, 1));
     ss->received = 0;
   }
 
   // See how many bytes we're trying to receive.
-  int size = MAX_CHUNK_SIZE;
+  int size = kMaxChunkSize;
   if (ss->received >= 3) {
     size = (ss->recv_buffer[0] & 0xFF) +
            ((ss->recv_buffer[1] << 8) & 0xFF00) +
@@ -548,7 +548,6 @@ int TransportLayer::tl_poll(int64_t start,
 bool TransportLayer::handle_events(struct pollfd *fds, int n) {
   int i;
   bool closed_sockets = false;
-  SprinklerSocket *ss;
   std::list<SprinklerSocket>::iterator sit;
 
   for (sit = sockets_.begin(), i = 0;

@@ -5,6 +5,24 @@
 
 #include "sprinkler_common.h"
 
+void SprinklerNode::run(int64_t duration) {
+  for (;;) {
+    int64_t now  = tl_.uptime();
+
+    // Terminate if timeout is reached.
+    if (duration > 0 && now > duration) {
+      return;
+    }
+    
+    if (now > time_to_adv_) {
+      send_adv_message();
+    }
+
+    if (now > time_to_pub_) {
+    }
+  }
+}
+
 void SprinklerNode::outgoing(const std::string &host, int port) {
   // Do nothing if this is a proxy.
   // TODO(haoyan): register host:port for shuffling if this is a client.
@@ -27,7 +45,7 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
       } else {
         // Forward the message to the next node in the chain.
         tl_.async_send_message(proxies_[0].host, proxies_[0].port,
-            data, size, true, release, data);
+            data, size, true, release, env);
       }
       break;
     case kSubMsg:
@@ -37,12 +55,13 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
     case kUnsubMsg:
       CHECK(role_);   // Has something, i.e., not a client.
       break;
-    case kPubMsg:
+    case kPxPubMsg:
       CHECK(role_);   // Has something, i.e., not a client.
-      handle_publish(data);
+      handle_proxy_publish(data);
       break;
-    case kDataMsg:
+    case kCliPubMsg:
       CHECK(role_);   // Has something, i.e., not a client.
+      handle_client_publish(data);
       break;
     default:
       LOG(ERROR) << "Unrecognized message type: " << msg_type;
@@ -148,12 +167,50 @@ void SprinklerNode::handle_unsubscription(const uint8_t *data) {
   demands_[sid].erase(pid);
 }
 
-void SprinklerNode::handle_publish(const uint8_t *data) {
+void SprinklerNode::proxy_publish() {
+  // For each stream with subscribers ...
+  for (auto &demand : demands_) {
+    int sid = demand.first;
+    // For each subscription ...
+    for (auto &request : demand.second) {
+      int pid = request.first;
+      int64_t next_seq = request.second;
+
+      uint8_t *msg =
+        static_cast<uint8_t *>(dcalloc(TransportLayer::kMaxChunkSize, 1));
+      *msg = kPxPubMsg;
+      *(msg + 1) = static_cast<uint8_t>(id_); 
+      *(msg + 2) = static_cast<uint8_t>(sid);
+
+      int64_t nevents = storage_.get_events(sid, next_seq, kMaxEventsPerMsg,
+          msg + 11);
+      if (nevents < 0) {
+        LOG(WARNING) << "Failed to get events: error code " << nevents;
+      } else {
+        int64_t size = 11 + nevents * kEventLen;
+        tl_.async_send_message(proxies_[pid].host, proxies_[pid].port,
+            msg, size, true, release_chunk, msg);
+      }
+    }
+  }
+}
+
+void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
+  int pid = static_cast<int>(*(data + 1));
+  int sid = static_cast<int>(*(data + 2));
+  CHECK_LT(sid, nstreams_);
+  int64_t nevents = static_cast<int64_t>(stoi(data + 3, 8));
+
+  storage_.put_events(sid, nevents, data + 11);
+}
+
+void SprinklerNode::handle_client_publish(const uint8_t *data) {
   int cid = static_cast<int>(*(data + 1));
   int sid = static_cast<int>(*(data + 2));
   CHECK(local_streams_.count(sid));   // Only accept if the sid is local.
+  int64_t nevents = static_cast<int64_t>(stoi(data + 3, 8));
 
-  // TODO(haoyan): storage_.add_events(data + 2);
+  storage_.put_raw_events(sid, nevents, data + 11);
 }
 
 void SprinklerNode::release_chunk(void *chunk) {

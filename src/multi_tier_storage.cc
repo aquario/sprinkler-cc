@@ -1,37 +1,25 @@
-#include "multi_layer_storage.h"
+#include "multi_tier_storage.h"
 
 #include <string.h>
 
+#include <glog/logging.h>
+
 #include "sprinkler_common.h"
 
-struct MemBuffer {
-  int64_t begin_seq, end_seq;
-  int64_t begin_offset, end_offset;
-  bool is_empty;
-  uint8_t *chunk;
-
-  MemBuffer() {
-    begin_seq = end_seq = 1;
-    begin_offset = end_offset = 0;
-    is_empty = true;
-    chunk = static_cast<uint8_t *>(dcalloc(kMemBufSize, 1));
-  }
-
-  ~MemBuffer() {
-    free(chunk);
-  }
-};
-
-void MultiTierStorage::set_stream_index(const std::vector &sids) {
-  streams_index_.clear();
-
+void MultiTierStorage::init(const std::vector<int> &sids) {
+  // Construct the mapping (stream_id -> array_index).
+  // sids -- a list of streams that will be stored permanently on this node.
+  nstreams_on_disk_ = sids.size();
+  stream_index_.clear();
   for (int i = 0; i < sids.size(); ++i) {
-    streams_index_[sids[i]] = i;
+    stream_index_[sids[i]] = i;
   }
+
+  next_chunk_no_ = std::vector<int64_t>(nstreams_on_disk_, 0);
 }
 
-int64_t MultiTierStorage::put_raw_events(
-    int sid, int64_t nevents, uint8_t *data) {
+void MultiTierStorage::put_raw_events(
+    int sid, int64_t nevents, const uint8_t *data) {
   if (nevents == 0) {
     LOG(WARNING) << "put_raw_events invoked with 0 events";
     return;
@@ -40,8 +28,9 @@ int64_t MultiTierStorage::put_raw_events(
 
   if (stream_index_.count(sid) == 1 &&
       get_free_space(mem_store_[sid]) < nevents * kEventLen) {
-    // TODO(haoyan): Not enough space and we want to keep all events, so flush
+    // Not enough space and we want to keep all events, so flush
     // something to disk.
+    flush_to_disk(sid);
   }
 
   uint8_t *ptr = mem_store_[sid].chunk;
@@ -70,7 +59,8 @@ int64_t MultiTierStorage::put_raw_events(
   mem_store_[sid].is_empty = false;
 }
 
-int64_t MultiTierStorage::put_events(int sid, int64_t nevents, uint8_t *data) {
+void MultiTierStorage::put_events(
+    int sid, int64_t nevents, const uint8_t *data) {
   if (nevents == 0) {
     LOG(WARNING) << "put_events invoked with 0 events";
     return;
@@ -94,8 +84,9 @@ int64_t MultiTierStorage::put_events(int sid, int64_t nevents, uint8_t *data) {
 
   if (stream_index_.count(sid) == 1 &&
       get_free_space(mem_store_[sid]) < nevents * kEventLen) {
-    // TODO(haoyan): Not enough space and we want to keep all events, so flush
+    // Not enough space and we want to keep all events, so flush
     // something to disk.
+    flush_to_disk(sid);
   }
 
   // Copy the data over.
@@ -105,14 +96,14 @@ int64_t MultiTierStorage::put_events(int sid, int64_t nevents, uint8_t *data) {
   } else {
     memmove(ptr + end_offset, data, kMemBufSize - end_offset);
     memmove(ptr, data + (kMemBufSize - end_offset),
-        nevents * kEventLen - (kMembufSize - end_offset));
+        nevents * kEventLen - (kMemBufSize - end_offset));
   }
 
   // Set new offset, seq#, and empty flag.
   end_offset += nevents * kEventLen;
   mem_store_[sid].end_offset = (end_offset < kMemBufSize
       ? end_offset
-      : end_offseta - kMemBufSize);
+      : end_offset - kMemBufSize);
   mem_store_[sid].end_seq = get_end_seq(data + (nevents - 1) * kEventLen);
   mem_store_[sid].is_empty = false;
 }
@@ -133,13 +124,14 @@ int64_t MultiTierStorage::get_events(
     }
 
     // TODO(haoyan): Otherwise, fetch events from disk.
+    return kErrPast;
   } else {
     // Everything wanted is in-memory.
     // First, determine the memory range needs to copy.
     int64_t begin_offset = adjust_offset_circular(first_seq,
         mem_store_[sid].begin_offset, mem_store_[sid].end_offset,
         mem_store_[sid].chunk);
-    int64_t end_offset = mem_store_[sid].end_offset
+    int64_t end_offset = mem_store_[sid].end_offset;
     int64_t nevents = (end_offset > begin_offset
         ? (end_offset - begin_offset) / kEventLen
         : (kMemBufSize - (begin_offset - end_offset)) / kEventLen);
@@ -162,6 +154,8 @@ int64_t MultiTierStorage::get_events(
           mem_store_[sid].chunk, end_offset);
     }
 
+    // nevents == 0 indicates an error behavior and should've been caught above.
+    CHECK_NE(nevents, 0);
     return nevents;
   }
 }
@@ -229,4 +223,12 @@ int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
     }
   }
   return -1;
+}
+
+void MultiTierStorage::flush_to_disk(int sid) {
+  int idx = stream_index_[sid];
+
+  if (mem_store_[sid].begin_offset + kDiskChunkSize <= kMemBufSize) {
+    // TODO(haoyan).
+  }
 }
