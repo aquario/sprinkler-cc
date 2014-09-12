@@ -17,6 +17,7 @@ DEFINE_bool(on_disk, true, "Is on-disk storage enabled?");
 DEFINE_int64(mem_cap, 1 << 31, "Total size of in-memory buffer, 2 GB default.");
 DEFINE_int64(disk_chunk_size, 1 << 24,
     "Size of an on-disk data chunk, 16 MB default.");
+DEFINE_int32(gc_thread_count, 0, "Number of garbage collection threads.");
 DEFINE_int64(duration, 0,
     "Lifetime of the proxy in seconds, 0 means infinite.");
 
@@ -83,7 +84,8 @@ int main(int argc, char **argv) {
   int64_t mem_buf_size = (FLAGS_mem_cap / nstreams / kEventLen) * kEventLen;
 
   SprinklerNode node(FLAGS_id, FLAGS_port, role, nproxies, proxies,
-      nstreams, local_streams, mem_buf_size, FLAGS_disk_chunk_size);
+      nstreams, local_streams, mem_buf_size, FLAGS_disk_chunk_size,
+      FLAGS_gc_thread_count);
   node.start_proxy(FLAGS_duration);
 
   return 0;

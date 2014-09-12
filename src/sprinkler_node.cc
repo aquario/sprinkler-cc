@@ -12,7 +12,16 @@ void SprinklerNode::start_proxy(int64_t duration) {
   // Convert duration to microseconds.
   duration *= 1000000;
 
+  // Start listening to incoming sockets.
   tl_.tl_listen();
+  // Register peer proxies.
+  for (int i = 0; i < nproxies_; ++i) {
+    if (proxies_[i].id == id_) {
+      continue;
+    }
+    tl_.register_peer(proxies_[i].host, proxies_[i].port);
+  }
+
   for (;;) {
     int64_t now  = tl_.uptime();
 
@@ -113,6 +122,10 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
 
 void SprinklerNode::send_adv_message() {
   for (int i = 0; i < nproxies_; ++i) {
+    if (proxies_[i].id == id_) {
+      continue;
+    }
+
     int msg_len = 2 + 8 * nstreams_;
     uint8_t *msg = static_cast<uint8_t *>(dcalloc(msg_len, 1));
 

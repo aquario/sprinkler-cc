@@ -1,5 +1,6 @@
 #include "multi_tier_storage.h"
 
+#include <pthread.h>
 #include <string.h>
 
 #include <string>
@@ -10,6 +11,20 @@
 
 int64_t MultiTierStorage::mem_buf_size_;
 int64_t MultiTierStorage::disk_chunk_size_;
+
+void MultiTierStorage::init_gc() {
+  if (gc_thread_count_ > 0) {
+    for (int i = 0; i < gc_thread_count_; ++i) {
+      gc_hints_[i].ptr = this;
+      gc_hints_[i].tid = i;
+      int rc = pthread_create(&gc_threads_[i], NULL,
+          &MultiTierStorage::start_gc, static_cast<void *>(&gc_hints_[i]));
+      if (rc) {
+        LOG(ERROR) << "pthread_create failed with return code " << rc << ".";
+      }
+    }
+  }
+}
 
 void MultiTierStorage::put_raw_events(
     int sid, int64_t nevents, const uint8_t *data) {
@@ -234,4 +249,18 @@ void MultiTierStorage::flush_to_disk(int sid) {
 
 std::string MultiTierStorage::get_chunk_name(int sid, int64_t chunk_id) {
   return "chunk-" + std::to_string(sid) + "-" + std::to_string(chunk_id);
+}
+
+void *MultiTierStorage::start_gc(void *arg) {
+  GcHint *hint_t = static_cast<GcHint *>(arg);
+  MultiTierStorage *storage_t = hint_t->ptr;
+  int tid = hint_t->tid;
+
+  storage_t->run_gc(tid);
+}
+
+void MultiTierStorage::run_gc(int thread_id) {
+  LOG(INFO) << "Garbage collection thread #" << thread_id << " started.";
+
+  // TODO(haoyan).
 }

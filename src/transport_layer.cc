@@ -460,7 +460,7 @@ bool TransportLayer::async_send_message(const std::string &host, int port,
     std::function<void(void *)> cleanup, void *env) {
   std::string endpoint = get_endpoint(host, port);
   // There should be an entry for this endpoint.
-  CHECK_EQ(addr_list_.count(endpoint), 1);
+  CHECK_EQ(addr_list_.count(endpoint), 1) << host << ':' << port;
   SocketAddr &sock_addr = addr_list_[endpoint];
   SprinklerSocket *ss = sock_addr.out;
   if (ss == NULL) {

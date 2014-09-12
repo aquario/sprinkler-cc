@@ -1,6 +1,7 @@
 #ifndef MULTI_TIER_STORAGE_H_
 #define MULTI_TIER_STORAGE_H_
 
+#include <pthread.h>
 #include <stdint.h>
 
 #include <deque>
@@ -16,10 +17,17 @@
 // at this node.
 class MultiTierStorage {
  public:
-  MultiTierStorage(int nstreams, int64_t mem_buf_size, int64_t disk_chunk_size)
-    : nstreams_(nstreams), mem_store_(nstreams), next_chunk_no_(nstreams, 0) {
+  MultiTierStorage(int nstreams, int64_t mem_buf_size, int64_t disk_chunk_size,
+      int gc_thread_count)
+    : nstreams_(nstreams), mem_store_(nstreams), next_chunk_no_(nstreams, 0),
+      gc_thread_count_(gc_thread_count),
+      gc_threads_(gc_thread_count), gc_hints_(gc_thread_count) {
+    // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
     disk_chunk_size_ = disk_chunk_size;
+
+    // Initialize garbage collection.
+    init_gc();
   }
 
   // Add a block of raw events from a client.
@@ -60,6 +68,12 @@ class MultiTierStorage {
     }
   };
 
+  // Structure used to pass the context and thread id to a GC thread.
+  struct GcHint {
+    MultiTierStorage *ptr;
+    int tid;
+  };
+
   // Returns amount of free space available in a MemBuffer, in bytes.
   int64_t get_free_space(const MemBuffer &membuf);
 
@@ -80,6 +94,22 @@ class MultiTierStorage {
   // Generate the name of next data chunk to be stored on disk.
   std::string get_chunk_name(int sid, int64_t chunk_id);
 
+  // Initialize data structures for garbage collection.
+  void init_gc();
+
+  // Entry point for a GC thread.  Every newly created GC thread starts from
+  // this static function, gets its context, and do work in run_gc.
+  // This is a workaround of std::thread, in which std::bind could be used and
+  // this function is no longer needed.  However, as of Sep 2014, std::thread
+  // is still not working under g++ 4.8.x.
+  //
+  // Args:
+  //  arg: a pointer to a GcHint struct.
+  static void *start_gc(void *arg);
+
+  // This is where garbage collection work is done.
+  void run_gc(int thread_id);
+
   // #streams.
   int nstreams_;
   // Mapping from stream id to array index for permanent storage.
@@ -96,6 +126,13 @@ class MultiTierStorage {
   std::vector<int64_t> next_chunk_no_;
   // Filenames for streams stored on this node.
   std::vector< std::deque<int64_t> > used_chunk_no_;
+
+  // #GC threads.
+  int gc_thread_count_;
+  // Pointers to garbage collection threads.
+  std::vector<pthread_t> gc_threads_;
+  // Context hints for each thread.
+  std::vector<GcHint> gc_hints_;
 };
 
 #endif  // MULTI_TIER_STORAGE_H_
