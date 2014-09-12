@@ -19,12 +19,21 @@ class MultiTierStorage {
  public:
   MultiTierStorage(int nstreams, int64_t mem_buf_size, int64_t disk_chunk_size,
       int gc_thread_count)
-    : nstreams_(nstreams), mem_store_(nstreams), next_chunk_no_(nstreams, 0),
+    : nstreams_(nstreams), mem_store_(nstreams),
+      mutex_(nstreams), next_chunk_no_(nstreams, 0),
       gc_thread_count_(gc_thread_count),
       gc_threads_(gc_thread_count), gc_hints_(gc_thread_count) {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
     disk_chunk_size_ = disk_chunk_size;
+
+    // Initialize mutexes.
+    for (int i = 0; i < nstreams; ++i) {
+      int rc = pthread_mutex_init(&mutex_[i], NULL);
+      if (rc) {
+        LOG(ERROR) << "pthread_mutex_init failed with rc " << rc << ".";
+      }
+    }
 
     // Initialize garbage collection.
     init_gc();
@@ -74,8 +83,32 @@ class MultiTierStorage {
     int tid;
   };
 
-  // Returns amount of free space available in a MemBuffer, in bytes.
+  // Info about an on-going garbage collection on a stream.
+  struct GcInfo {
+    // The range of memory buffer in which events are used to garbage collect
+    // older events.
+    int64_t begin_hash_offset, end_hash_offset;
+    // The range of memory buffer currently being garbage collected.
+    int64_t begin_gc_offset, end_gc_offset;
+    // Hash table of GC events.
+    std::unordered_set<int64_t> table;
+  };
+
+  // Return the number of bytes in circular buffer range [begin, end).
+  // Exception: when begin == end, returns mem_buf_size_. The 0 case
+  // is covered by checking MemBuffer.is_emtpy.
+  int64_t distance(int64_t begin, int64_t end);
+
+  // Returns the amount of free space available in a MemBuffer, in bytes.
+  int64_t get_used_space(const MemBuffer &membuf);
+
+  // Returns the amount of free space available in a MemBuffer, in bytes.
+  // This is always mem_buf_size_ - get_used_space().
   int64_t get_free_space(const MemBuffer &membuf);
+
+  // Returns if an offset falls into the region of valid events,
+  // i.e. [begin_offset, end_offset), modulo mem_buf_size_.
+  bool is_valid_offset(const MemBuffer &membuf, int64_t offset);
 
   // Returns the offset in an array of events such that seq fits into the
   // event at that offset, or -1 in case no event fits.
@@ -119,13 +152,8 @@ class MultiTierStorage {
   static int64_t mem_buf_size_;
   // In-memory buffer for all streams.
   std::vector<MemBuffer> mem_store_;
-
-  // Size of an on-disk data chunk in bytes.
-  static int64_t disk_chunk_size_;
-  // Next chunk# to assign for each stream stored on disk.
-  std::vector<int64_t> next_chunk_no_;
-  // Filenames for streams stored on this node.
-  std::vector< std::deque<int64_t> > used_chunk_no_;
+  // Mutex for each stream.
+  std::vector<pthread_mutex_t> mutex_;
 
   // #GC threads.
   int gc_thread_count_;
@@ -133,6 +161,13 @@ class MultiTierStorage {
   std::vector<pthread_t> gc_threads_;
   // Context hints for each thread.
   std::vector<GcHint> gc_hints_;
+
+  // Size of an on-disk data chunk in bytes.
+  static int64_t disk_chunk_size_;
+  // Next chunk# to assign for each stream stored on disk.
+  std::vector<int64_t> next_chunk_no_;
+  // Filenames for streams stored on this node.
+  std::vector< std::deque<int64_t> > used_chunk_no_;
 };
 
 #endif  // MULTI_TIER_STORAGE_H_

@@ -20,7 +20,7 @@ void MultiTierStorage::init_gc() {
       int rc = pthread_create(&gc_threads_[i], NULL,
           &MultiTierStorage::start_gc, static_cast<void *>(&gc_hints_[i]));
       if (rc) {
-        LOG(ERROR) << "pthread_create failed with return code " << rc << ".";
+        LOG(ERROR) << "pthread_create failed with rc " << rc << ".";
       }
     }
   }
@@ -159,15 +159,35 @@ int64_t MultiTierStorage::get_events(
   }
 }
 
-int64_t MultiTierStorage::get_free_space(const MemBuffer &membuf) {
-  if (membuf.is_empty) {
-    return mem_buf_size_;
-  }
-
-  if (membuf.begin_offset < membuf.end_offset) {
-    return mem_buf_size_ - (membuf.end_offset - membuf.begin_offset);
+int64_t MultiTierStorage::distance(int64_t begin, int64_t end) {
+  if (end > begin) {
+    return end - begin;
   } else {
-    return membuf.begin_offset - membuf.end_offset;
+    return mem_buf_size_ - (begin - end);
+  }
+}
+
+int64_t MultiTierStorage::get_used_space(const MemBuffer &membuf) {
+  if (membuf.is_empty) {
+    return 0;
+  }
+  return distance(membuf.begin_offset, membuf.end_offset);
+}
+
+int64_t MultiTierStorage::get_free_space(const MemBuffer &membuf) {
+  return mem_buf_size_ - get_used_space(membuf);
+}
+
+bool MultiTierStorage::is_valid_offset(
+    const MemBuffer &membuf, int64_t offset) {
+  if (membuf.is_empty) {
+    return false;
+  }
+  if (membuf.end_offset > membuf.begin_offset) {
+    return offset >= begin_offset && offset < end_offset;
+  } else {
+    // Assumes that offset is always within [0, mem_buf_size_).
+    return offset >= begin_offset || offset < end_offset;
   }
 }
 
@@ -262,5 +282,38 @@ void *MultiTierStorage::start_gc(void *arg) {
 void MultiTierStorage::run_gc(int thread_id) {
   LOG(INFO) << "Garbage collection thread #" << thread_id << " started.";
 
-  // TODO(haoyan).
+  std::vector<int> my_streams;
+  std::unordered_map<int, GcInfo> metadata;
+
+  // First, determine which streams am I responsible for.
+  for (int i = thread_id, i < nstreams_; i += gc_thread_count_) {
+    my_streams.push_back(i);
+    metadata.insert(i, GcInfo());
+  }
+
+  // Round robin across these streams.
+  int i = -1;
+  while (true) {
+    if (++i == my_streams.size()) {
+      i = 0;
+    }
+
+    MemBuffer &membuf = mem_store_[my_streams[i]];
+    GcInfo &gc_info = metadata[my_streams[i]];
+    
+    // All the buffer before the hash region has been GCed,
+    // time to start another pass.
+    if (gc_info.end_gc_offset == gc_info.begin_hash_offset) {
+      // Skip GC if there are too few new events.
+      if (gc_info.end_hash_offset == membuf.end_offset ||
+          distance(end_hash_offset, end_offset) < min_events_to_gc_) {
+        continue;
+      }
+
+      pthread_mutex_lock(&mutex_[my_streams[i]]);
+      // TODO(haoyan).
+
+      pthread_mutex_unlock(&mutex_[my_streams[i]]);
+    }
+  }
 }
