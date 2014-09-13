@@ -106,6 +106,10 @@ class MultiTierStorage {
   // This is always mem_buf_size_ - get_used_space().
   int64_t get_free_space(const MemBuffer &membuf);
 
+  // Returns offset of the next/previous event in a MemBuffer.
+  int64_t next_offset(int64_t offset);
+  int64_t prev_offset(int64_t offset);
+
   // Returns if an offset falls into the region of valid events,
   // i.e. [begin_offset, end_offset), modulo mem_buf_size_.
   bool is_valid_offset(const MemBuffer &membuf, int64_t offset);

@@ -178,6 +178,18 @@ int64_t MultiTierStorage::get_free_space(const MemBuffer &membuf) {
   return mem_buf_size_ - get_used_space(membuf);
 }
 
+int64_t MultiTierStorage::next_offset(int64_t offset) {
+  offset += kEventLen;
+  if (offset == mem_buf_size_) {
+    offset = 0;
+  }
+  return offset;
+}
+
+int64_t MultiTierStorage::prev_offset(int64_t offset) {
+  return offset == 0 ? mem_buf_size_ - kEventLen : offset - kEventLen;
+}
+
 bool MultiTierStorage::is_valid_offset(
     const MemBuffer &membuf, int64_t offset) {
   if (membuf.is_empty) {
@@ -301,19 +313,120 @@ void MultiTierStorage::run_gc(int thread_id) {
     MemBuffer &membuf = mem_store_[my_streams[i]];
     GcInfo &gc_info = metadata[my_streams[i]];
     
-    // All the buffer before the hash region has been GCed,
-    // time to start another pass.
-    if (gc_info.end_gc_offset == gc_info.begin_hash_offset) {
-      // Skip GC if there are too few new events.
-      if (gc_info.end_hash_offset == membuf.end_offset ||
-          distance(end_hash_offset, end_offset) < min_events_to_gc_) {
-        continue;
+    // Skip GC if there are too few events.
+    if (distance(membuf.begin_offset, membuf.end_offset) < min_events_to_gc_) {
+      continue;
+    }
+
+    // Construct GC table.
+    // Here we assume that flush_to_disk will never interfere with GC table
+    // region, therefore no locking is needed here.  We assume this because
+    // flushing is only invoked when the buffer is almost full, at which point
+    // the GC table region is far away enough from being flushed.
+    int64_t gc_table_size =
+        get_used_space(membuf) / kEventLen > max_gc_table_size_ * 2
+        ? max_gc_table_size_
+        : get_used_space(membuf) / kEventLen / 2;
+
+    gc_info.table.clear();
+    int64_t end_offset = membuf.end_offset;
+    for (int i = 0; i < gc_table_size; ++i) {
+      end_offset =
+          (end_offset == 0 ? mem_buf_size_ - kEventLen : offset - kEventLen);
+      // This has to be a data event.
+      CHECK_EQ(*end_offset, 0);
+      gc_info.insert(get_begin_seq(offset));
+    }
+
+    // Perform GC with mutex.
+    pthread_mutex_lock(&mutex_[my_streams[i]]);
+
+    int64_t begin_seq = membuf.begin_seq;
+    int64_t begin_offset = membuf.begin_offset;
+    while (begin_offset != end_offset) {
+      // a) Determine where to take a breathe.
+      int64_t pause_offset = end_offset;
+      if (distance(begin_offset, end_offset) > max_gc_chunk_size_) {
+        pause_offset = begin_offset + max_gc_chunk_size_;
+        if (pause_offset >= mem_buf_size_) {
+          pause_offset -= mem_buf_size_;
+        }
+      } else {
+        pause_offset = end_offset;
       }
 
-      pthread_mutex_lock(&mutex_[my_streams[i]]);
-      // TODO(haoyan).
+      // b) In buffer [begin_offset, pause_offset), scan for events should be
+      // GCed, and turn them into (singleton) tombstones.
+      int64_t cursor = begin_offset;
+      while (cursor != pause_offset) {
+        if (is_data_event(cursor) &&
+            gc_info.table.count(get_begin_seq(cursor)) == 1) {
+          to_tombstone(cursor);
+        }
 
-      pthread_mutex_unlock(&mutex_[my_streams[i]]);
+        cursor = next_offset(cursor);
+      }
+
+      // c) Merge tombstones.
+      // Variables used in this phase:
+      //   processed: all events AFTER this offset are done;
+      //   cursor: offset of current event being examined;
+      //   current_gc: are we merging GC events now?
+      //   lo: if current_gc is true, the lower bound of current GC event.
+      int64_t processed = pause_offset;
+      int64_t cursor = pause_offset;
+      bool currrent_gc = false;
+      int64_t lo = 0;
+      while (cursor != begin_offset) {
+        cursor = prev_offset(processed);
+        if (is_data_event(cursor)) {
+          // For data events, move them rightwards if necessary.
+          processed = prev_offset(processed);
+          if (cursor != processed) {
+            memmove(processed, cursor, kEventLen);
+          }
+          current_gc = false;
+        } else {
+          // For GC events, set a mark if this is the first one in a series,
+          // otherwise, update the mark.
+          if (!current_gc) {
+            // Write the GC event if this is the first in a series.
+            current_gc = true;
+            processed = prev_offset(processed);
+            if (cursor != processed) {
+              memmove(processed, cursor, kEventLen);
+            }
+          } else {
+            // Ranges of adjacent GC events should be continuous.
+            CHECK_EQ(get_end_seq(cursor), lo);
+            // Update the lower bound for current GC event.
+            lo = get_begin_seq(cursor);
+            memmove(processed + 1, cursor + 1, 8);
+          }
+        }
+      }
+
+      // d) Squeeze the buffer rightwards.
+      // If there is valid buffer region before where we started, we need
+      // to move that chunk of space rightwards.
+      if (begin_offset != membuf.begin_offset) {
+        // If the scan ended with a GC event, we should check if the event just
+        // before begin_offset is also a GC event, and if so, merge them.
+        cursor = prev_offset(begin_offset)
+        if (is_tombstone(cursor)) {
+          CHECK_EQ(get_end_seq(cursor), get_begin_seq(processed));
+          memmove(processed + 1, cursor + 1, 8);
+          // From this point on, begin_offset is used as the right boundary
+          // of copying the previous chunk.
+          begin_offset = cursor;
+        }
+
+        // TODO(haoyan): Move the data before begin_offset rightwards.
+        int64_t dist = distance(begin_offset, processed);
+
+      }
     }
+
+    pthread_mutex_unlock(&mutex_[my_streams[i]]);
   }
 }

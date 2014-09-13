@@ -18,6 +18,14 @@ uint64_t stoi(const uint8_t *src, int len) {
   return result;
 }
 
+bool is_data_event(const uint8_t *event) {
+  return *event == 0;
+}
+
+bool is_tombstone(const uint8_t *event) {
+  return *event == 1;
+}
+
 int64_t get_begin_seq(const uint8_t *event) {
   // No matter what kind of event, this is always the right place.
   return static_cast<int64_t>(stoi(event + 1, 8));
@@ -38,3 +46,13 @@ bool in_range(const uint8_t *event, int64_t seq) {
     return seq >= get_begin_seq(event) && seq < get_end_seq(event);
   }
 }
+
+void to_tombstone(uint8_t *event) {
+  CHECK_EQ(*event, 0);
+  int64_t end_seq = get_end_seq(event);
+
+  *event = 1;
+  itos(event + 9, end_seq, 8);
+  memset(event + 17, 0, kEventLen - 17);
+}
+

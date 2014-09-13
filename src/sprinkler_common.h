@@ -19,6 +19,10 @@ const int64_t kRawEventLen = 16;
 void itos(uint8_t *dst, uint64_t val, int len);
 uint64_t stoi(const uint8_t *src, int len);
 
+// Check for event types.
+bool is_data_event(const uint8_t *event);
+bool is_tombstone(const uint8_t *event);
+
 // Return the seq# of a data event, or the left boundary of a tombstone event.
 int64_t get_begin_seq(const uint8_t *event);
 // Return the seq# + 1 of a data event, or the right boundary of a
@@ -28,5 +32,8 @@ int64_t get_end_seq(const uint8_t *event);
 // For data event, return true if the seq# equals its own; for tombstone,
 // return true if begin <= seq# < end holds.
 bool in_range(const uint8_t *event, int64_t seq);
+
+// Convert a data event into a singleton tombstone.
+void to_tombstone(uint8_t *event);
 
 #endif  // SPRINKLER_COMMON_H_
