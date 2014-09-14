@@ -40,10 +40,11 @@ DEFINE_string(expr_name, "default", "Name of current experiment.");
 //   <n-local-streams> <sid-1> ... <sid-n>
 
 int main(int argc, char **argv) {
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
+  google::ParseCommandLineFlags(&argc, &argv, true);
 
 //  FLAGS_log_dir = "./logp";
-//  google::InitGoogleLogging(argv[0]);
+  FLAGS_logtostderr = 1;
+  google::InitGoogleLogging(argv[0]);
 
   // Must provide a non-negative proxy id.
   CHECK_GT(FLAGS_id, -1);

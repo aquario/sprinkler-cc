@@ -19,6 +19,7 @@ void SprinklerNode::start_proxy(int64_t duration) {
     if (proxies_[i].id == id_) {
       continue;
     }
+    VLOG(kLogLevel) << "Registering proxy " << proxies_[i].id;
     tl_.register_peer(proxies_[i].host, proxies_[i].port);
   }
 
@@ -27,9 +28,11 @@ void SprinklerNode::start_proxy(int64_t duration) {
 
     // Terminate if timeout is reached.
     if (duration > 0 && now > duration) {
-      LOG(INFO) << "Max duration reached.  Proxy is terminating.";
+      VLOG(kLogLevel) << "Max duration reached.  Proxy is terminating.";
       return;
     }
+
+    tl_.wait(0);
     
     // The tail of a proxy chain sends adv & pub messages periodically.
     if (role_ & kTail) {
@@ -54,6 +57,8 @@ void SprinklerNode::start_client(
   duration *= 1000000;
 
   tl_.tl_listen();
+  VLOG(kLogLevel) << "Registering proxy (" << proxies_[0].host << ", "
+      << proxies_[0].port << ")";
   tl_.register_peer(proxies_[0].host, proxies_[0].port);
 
   int64_t time_to_pub = interval;
@@ -62,9 +67,11 @@ void SprinklerNode::start_client(
 
     // Terminate if timeout is reached.
     if (duration > 0 && now > duration) {
-      LOG(INFO) << "Max duration reached.  Client is terminating.";
+      VLOG(kLogLevel) << "Max duration reached.  Client is terminating.";
       return;
     }
+
+    tl_.wait(0);
     
     // Publish events to proxy.
     if (interval == 0 || now > time_to_pub) {
@@ -212,6 +219,9 @@ void SprinklerNode::handle_subscription(const uint8_t *data) {
   CHECK_LT(sid, nstreams_);
   int64_t next_seq = static_cast<int64_t>(stoi(data + 3, 8));
 
+  VLOG(kLogLevel) << "handle_subscription from proxy " << pid << " on stream "
+      << sid << " starting seq# " << next_seq;
+
   if (demands_[sid].count(pid)) {
   // If the subscription already exists, update with next_seq if it is larger.
     // Note that whether it makes sense to lower next_seq depends on failure
@@ -229,6 +239,9 @@ void SprinklerNode::handle_unsubscription(const uint8_t *data) {
   int8_t sid = static_cast<int8_t>(*(data + 2));
   CHECK_GE(sid, 0);
   CHECK_LT(sid, nstreams_);
+
+  VLOG(kLogLevel) << "handle_unsubscription from proxy " << pid
+      << " on stream " << sid;
 
   demands_[sid].erase(pid);
 }
@@ -273,6 +286,9 @@ void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
   CHECK_LT(sid, nstreams_);
   int64_t nevents = static_cast<int64_t>(stoi(data + 3, 8));
 
+  VLOG(kLogLevel) << "handle_proxy_publish from proxy " << pid
+      << " on stream " << sid << " with " << nevents << " events";
+
   storage_.put_events(sid, nevents, data + 11);
 }
 
@@ -300,6 +316,9 @@ void SprinklerNode::handle_client_publish(const uint8_t *data) {
   int sid = static_cast<int>(*(data + 3));
   CHECK(local_streams_.count(sid));   // Only accept if the sid is local.
   int64_t nevents = static_cast<int64_t>(stoi(data + 4, 8));
+
+  VLOG(kLogLevel) << "handle_client_publish from client " << cid
+      << " on stream " << sid << " with " << nevents << " events";
 
   storage_.put_raw_events(sid, nevents, data + 12);
 }

@@ -129,6 +129,9 @@ class TransportLayer {
   // Maximum chunk size for a single message
   static const int kMaxChunkSize = 32768;
 
+  // Log level for this class.
+  static const int kLogLevel = 10;
+
  private:
   // Invoke send/recv/poll syscalls.
   int do_sendmsg(int skt, struct msghdr *mh);

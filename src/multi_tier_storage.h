@@ -63,6 +63,9 @@ class MultiTierStorage {
   static const int64_t kErrFuture = -1;  // Asked for a future seq#.
   static const int64_t kErrPast = -2;  // Asked for a seq# that is discarded.
 
+  // Log level for this class.
+  static const int kLogLevel = 8;
+
  private:
   // In-memory buffer for a stream.
   struct MemBuffer {

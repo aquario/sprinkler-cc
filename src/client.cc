@@ -20,10 +20,11 @@ DEFINE_int32(interval, 1000000,
 DEFINE_int32(batch_size, 1, "Number of events per batch, default 1.");
 
 int main(int argc, char **argv) {
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
+  google::ParseCommandLineFlags(&argc, &argv, true);
 
 //  FLAGS_log_dir = "./logc";
-//  google::InitGoogleLogging(argv[0]);
+  FLAGS_logtostderr = 1;
+  google::InitGoogleLogging(argv[0]);
 
   // Must provide a valid client id.
   CHECK_GE(FLAGS_id, 10000);

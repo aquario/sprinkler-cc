@@ -32,7 +32,7 @@ TransportLayer::TransportLayer(int id, int port,
 
   addr_list_ = std::unordered_map<std::string, SocketAddr>();
 
-  LOG(INFO) << "Created Sprinkler node with id " << id_;
+  VLOG(kLogLevel) << "Created Sprinkler node with id " << id_;
 }
 
 // Return the number of microseconds since we started.
@@ -65,7 +65,7 @@ SprinklerSocket *TransportLayer::add_socket(int skt,
 void TransportLayer::async_socket_send(
     SprinklerSocket *ss, const uint8_t *data, int size, bool is_ctrl,
     std::function<void(void *)> cleanup, void *env) {
-  LOG(INFO) << "async_socket_send: send " << size << " bytes.";
+  VLOG(kLogLevel) << "async_socket_send: send " << size << " bytes.";
   CHECK(ss);
 
   Chunk chunk(data, size, cleanup, env);
@@ -77,6 +77,8 @@ void TransportLayer::async_socket_send(
     ss->data_cqueue.push_back(chunk);
     ss->data_remainder += size;
   }
+
+  VLOG(kLogLevel) << "Done async_socket_send";
 }
 
 int TransportLayer::do_sendmsg(int skt, struct msghdr *mh) {
@@ -106,13 +108,13 @@ int TransportLayer::prepare_iovec(const std::list<Chunk> &cqueue, int offset,
     }
   }
 
-  LOG(INFO) << "prepare_iovec: added " << total << " bytes.";
+  VLOG(kLogLevel) << "prepare_iovec: added " << total << " bytes.";
 
   return iovlen;
 }
 
 int TransportLayer::send_ready(SprinklerSocket *ss) {
-  LOG(INFO) << "send_ready: ctrl_offset = " << ss->ctrl_offset
+  VLOG(kLogLevel) << "send_ready: ctrl_offset = " << ss->ctrl_offset
             << "; ctrl_remainder = " << ss->ctrl_remainder
             << "; data_offset = " << ss->data_offset
             << "; data_remainder = " << ss->data_remainder;
@@ -126,7 +128,7 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
   // If it's the first time, stop here.
   if (ss->first) {
     ss->first = false;
-    LOG(INFO) << "set first to false";
+    VLOG(kLogLevel) << "set first to false";
     return 1;
   }
 
@@ -150,7 +152,7 @@ int TransportLayer::send_ready(SprinklerSocket *ss) {
       // is cleaned up automatically.
       LOG(FATAL) << "send_ready: sendmsg";
     } else {
-      LOG(INFO) << "send_ready: sent " << n << " bytes to socket " << ss->skt
+      VLOG(kLogLevel) << "send_ready: sent " << n << " bytes to socket " << ss->skt
                 << "; iovlen = " << iovlen;
 
       if (n <= ss->ctrl_remainder) {
@@ -203,7 +205,7 @@ std::string TransportLayer::get_endpoint(std::string host, int port) {
 }
 
 int TransportLayer::recv_ready(SprinklerSocket *ss) {
-  LOG(INFO) << "recv_ready";
+  VLOG(kLogLevel) << "recv_ready";
   if (ss->recv_buffer == NULL) {
     ss->recv_buffer = static_cast<uint8_t *>(dcalloc(kMaxChunkSize, 1));
     ss->received = 0;
@@ -220,7 +222,7 @@ int TransportLayer::recv_ready(SprinklerSocket *ss) {
   // Try to fill up the chunk.
   int n = do_recv(ss->skt, ss->recv_buffer + ss->received, size - ss->received);
   if (n == 0) {
-    LOG(INFO) << "recv_ready: EOF " << ss->skt << " " << ss->received
+    VLOG(kLogLevel) << "recv_ready: EOF " << ss->skt << " " << ss->received
       << " " << ss->descr;
     return 0;
   }
@@ -233,7 +235,7 @@ int TransportLayer::recv_ready(SprinklerSocket *ss) {
     return 0;
   }
 
-  LOG(INFO) << "recv_ready: received " << n << " out of " << size << " bytes";
+  VLOG(kLogLevel) << "recv_ready: received " << n << " out of " << size << " bytes";
   ss->received += n;
 
   // If we do not yet have a complete header, wait for more.
@@ -290,7 +292,7 @@ int TransportLayer::got_client(SprinklerSocket *ss) {
   struct sockaddr_in sin;
   socklen_t len = sizeof(sin);
 
-  LOG(INFO) << "got client";
+  VLOG(kLogLevel) << "got client";
 
   if ((clt = accept(ss->skt, (struct sockaddr *) &sin, &len)) < 0) {
     LOG(ERROR) << strerror(errno) << " got_client: accept";
@@ -406,7 +408,7 @@ void TransportLayer::register_peer(const std::string &host, int port) {
 }
 
 void TransportLayer::try_connect(SocketAddr *socket_addr) {
-  LOG(INFO) << "out addr: " << (uint64_t) socket_addr->out;
+  VLOG(kLogLevel) << "out addr: " << (uint64_t) socket_addr->out;
   if (socket_addr->out == NULL) {
     // Create the socket.
     int skt = socket(AF_INET, SOCK_STREAM, 0);
@@ -448,7 +450,7 @@ void TransportLayer::try_connect(SocketAddr *socket_addr) {
 }
 
 void TransportLayer::try_connect_all() {
-  LOG(INFO) << "try_connect_all";
+  VLOG(kLogLevel) << "try_connect_all";
   std::unordered_map<std::string, SocketAddr>::iterator sit;
   for (sit = addr_list_.begin(); sit != addr_list_.end(); ++sit) {
     try_connect(&sit->second);
@@ -465,7 +467,7 @@ bool TransportLayer::async_send_message(const std::string &host, int port,
   SprinklerSocket *ss = sock_addr.out;
   if (ss == NULL) {
     // If not connected, try to reconnect.
-    LOG(INFO) << "No connection, recoonect to " << host << ":" << port;
+    VLOG(kLogLevel) << "No connection, recoonect to " << host << ":" << port;
     try_connect(&sock_addr);
     ss = sock_addr.out;
     if (ss == NULL) {
@@ -567,7 +569,7 @@ bool TransportLayer::handle_events(struct pollfd *fds, int n) {
     }
     if (events & (POLLIN | POLLHUP)) {
       if (!(sit->input)(&*sit)) {
-        LOG(INFO) << "handle_events: closing socket";
+        VLOG(kLogLevel) << "handle_events: closing socket";
         close(sit->skt);
         sit->skt = -1;
         closed_sockets = true;
@@ -663,15 +665,15 @@ void SprinklerSocket::init() {
   if (getsockopt(skt, SOL_SOCKET, SO_SNDBUF, &sndbuf_size, &optlen) < 0) {
     LOG(ERROR) << "add_socket: getsockopt SO_SNDBUF";
   } else {
-    LOG(INFO) << "add_socket " << descr
-              << ": sndbuf " << sndbuf_size << "\n";
+    VLOG(TransportLayer::kLogLevel) << "add_socket " << descr
+        << ": sndbuf " << sndbuf_size << "\n";
   }
   optlen = sizeof(rcvbuf_size);
   if (getsockopt(skt, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size, &optlen) < 0) {
     LOG(ERROR) << "add_socket: getsockopt SO_RCVBUF";
   } else {
-    LOG(INFO) << "add_socket " << descr
-              << ": rcvbuf " << rcvbuf_size << "\n";
+    VLOG(TransportLayer::kLogLevel) << "add_socket " << descr
+      << ": rcvbuf " << rcvbuf_size << "\n";
   }
   if (sndbuf_size == 0) {
     sndbuf_size = rcvbuf_size;

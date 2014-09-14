@@ -53,12 +53,15 @@ void MultiTierStorage::put_raw_events(
 
   // Next, format events with seq#'s.
   for (int i = 0; i < nevents; ++i) {
-    itos(ptr + end_offset + 1, mem_store_[sid].end_seq++, 8);
+    itos(ptr + end_offset + 1, mem_store_[sid].end_seq, 8);
     memmove(ptr + end_offset + 9, data + i * kEventLen, kRawEventLen);
     end_offset += kEventLen;
     if (end_offset == mem_buf_size_) {
       end_offset = 0;
     }
+    // TODO(haoyan): Change this to LOG_EVERY_N when load gets heavier.
+    LOG(INFO) << "PUT " << sid << " " << mem_store_[sid].end_seq;
+    ++mem_store_[sid].end_seq;
   }
 
   // Finally, set the new end_offset and empty flag.
@@ -111,6 +114,9 @@ void MultiTierStorage::put_events(
       : end_offset - mem_buf_size_);
   mem_store_[sid].end_seq = get_end_seq(data + (nevents - 1) * kEventLen);
   mem_store_[sid].is_empty = false;
+
+  // TODO(haoyan): Change this to LOG_EVERY_N when load gets heavier.
+  LOG(INFO) << "PUT " << sid << " " << (mem_store_[sid].end_seq - 1);
 }
 
 int64_t MultiTierStorage::get_events(
@@ -293,7 +299,7 @@ void *MultiTierStorage::start_gc(void *arg) {
 }
 
 void MultiTierStorage::run_gc(int thread_id) {
-  LOG(INFO) << "Garbage collection thread #" << thread_id << " started.";
+  VLOG(kLogLevel) << "Garbage collection thread #" << thread_id << " started.";
 
   std::vector<int> my_streams;
   std::unordered_map<int, GcInfo> metadata;

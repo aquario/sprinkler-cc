@@ -97,6 +97,9 @@ class SprinklerNode {
   static const int kHead = 2;
   static const int kTail = 4;
 
+  // Log level for this class.
+  static const int kLogLevel = 6;
+
  private:
   // Upcall on establishing a connection.
   void outgoing(const std::string &host, int port);
