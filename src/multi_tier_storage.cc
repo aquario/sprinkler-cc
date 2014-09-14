@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <string.h>
 
+#include <algorithm>
 #include <string>
 
 #include <glog/logging.h>
@@ -196,10 +197,10 @@ bool MultiTierStorage::is_valid_offset(
     return false;
   }
   if (membuf.end_offset > membuf.begin_offset) {
-    return offset >= begin_offset && offset < end_offset;
+    return offset >= membuf.begin_offset && offset < membuf.end_offset;
   } else {
     // Assumes that offset is always within [0, mem_buf_size_).
-    return offset >= begin_offset || offset < end_offset;
+    return offset >= membuf.begin_offset || offset < membuf.end_offset;
   }
 }
 
@@ -298,9 +299,9 @@ void MultiTierStorage::run_gc(int thread_id) {
   std::unordered_map<int, GcInfo> metadata;
 
   // First, determine which streams am I responsible for.
-  for (int i = thread_id, i < nstreams_; i += gc_thread_count_) {
+  for (int i = thread_id; i < nstreams_; i += gc_thread_count_) {
     my_streams.push_back(i);
-    metadata.insert(i, GcInfo());
+    metadata.insert(std::make_pair(i, GcInfo()));
   }
 
   // Round robin across these streams.
@@ -315,7 +316,8 @@ void MultiTierStorage::run_gc(int thread_id) {
     GcInfo &gc_info = metadata[my_streams[stream_idx]];
     
     // Skip GC if there are too few events.
-    if (distance(membuf.begin_offset, membuf.end_offset) < min_events_to_gc_) {
+    if (distance(membuf.begin_offset, membuf.end_offset) / kEventLen
+        < min_events_to_gc_) {
       continue;
     }
 
@@ -332,11 +334,10 @@ void MultiTierStorage::run_gc(int thread_id) {
     gc_info.table.clear();
     int64_t end_offset = membuf.end_offset;
     for (int i = 0; i < gc_table_size; ++i) {
-      end_offset =
-          (end_offset == 0 ? mem_buf_size_ - kEventLen : offset - kEventLen);
+      end_offset = prev_offset(end_offset);
       // This has to be a data event.
       CHECK_EQ(*(ptr + end_offset), 0);
-      gc_info.insert(get_begin_seq(offset));
+      gc_info.table.insert(get_begin_seq(ptr + end_offset));
     }
 
     // Perform GC with mutex.
@@ -375,8 +376,8 @@ void MultiTierStorage::run_gc(int thread_id) {
       //   current_gc: are we merging GC events now?
       //   lo: if current_gc is true, the lower bound of current GC event.
       int64_t processed = pause_offset;
-      int64_t cursor = pause_offset;
-      bool currrent_gc = false;
+      cursor = pause_offset;
+      bool current_gc = false;
       int64_t lo = 0;
       while (cursor != begin_offset) {
         cursor = prev_offset(processed);
@@ -413,7 +414,7 @@ void MultiTierStorage::run_gc(int thread_id) {
       if (begin_offset != membuf.begin_offset) {
         // If the scan ended with a GC event, we should check if the event just
         // before begin_offset is also a GC event, and if so, merge them.
-        cursor = prev_offset(begin_offset)
+        cursor = prev_offset(begin_offset);
         if (is_tombstone(ptr + cursor)) {
           CHECK_EQ(get_end_seq(ptr + cursor), get_begin_seq(ptr + processed));
           memmove(ptr + processed + 1, ptr + cursor + 1, 8);
@@ -459,7 +460,7 @@ void MultiTierStorage::run_gc(int thread_id) {
             this_dst -= mem_buf_size_;
           }
           int64_t this_len = cutoffs[i + 1] - cutoffs[i];
-          memmove(this_dst, this_src, this_len);
+          memmove(ptr + this_dst, ptr + this_src, this_len);
         }
 
         // Update offsets.

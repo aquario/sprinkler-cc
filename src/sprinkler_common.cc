@@ -1,7 +1,9 @@
 #include "sprinkler_common.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 
+#include <glog/logging.h>
 
 void itos(uint8_t *dst, uint64_t val, int len) {
   for (int i = 0; i < 8; ++i) {

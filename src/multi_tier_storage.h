@@ -7,7 +7,10 @@
 #include <deque>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
+
+#include <glog/logging.h>
 
 #include "dmalloc.h"
 
@@ -18,10 +21,13 @@
 class MultiTierStorage {
  public:
   MultiTierStorage(int nstreams, int64_t mem_buf_size, int64_t disk_chunk_size,
-      int gc_thread_count)
+      int gc_thread_count, int64_t min_events_to_gc,
+      int64_t max_gc_table_size, int64_t max_gc_chunk_size)
     : nstreams_(nstreams), mem_store_(nstreams),
       mutex_(nstreams), next_chunk_no_(nstreams, 0),
-      gc_thread_count_(gc_thread_count),
+      max_gc_table_size_(max_gc_table_size),
+      max_gc_chunk_size_(max_gc_chunk_size),
+      gc_thread_count_(gc_thread_count), min_events_to_gc_(min_events_to_gc),
       gc_threads_(gc_thread_count), gc_hints_(gc_thread_count) {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
@@ -159,6 +165,12 @@ class MultiTierStorage {
   // Mutex for each stream.
   std::vector<pthread_mutex_t> mutex_;
 
+  // Maximum #events in the hash table used to match previous events.
+  int64_t max_gc_table_size_;
+  // Maximum buffer size to be GCed before pausing, in bytes.
+  int64_t max_gc_chunk_size_;
+  // Min #events in a stream to trigger GC.
+  int64_t min_events_to_gc_;
   // #GC threads.
   int gc_thread_count_;
   // Pointers to garbage collection threads.

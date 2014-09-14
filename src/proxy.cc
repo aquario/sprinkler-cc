@@ -18,6 +18,13 @@ DEFINE_int64(mem_cap, 1 << 31, "Total size of in-memory buffer, 2 GB default.");
 DEFINE_int64(disk_chunk_size, 1 << 24,
     "Size of an on-disk data chunk, 16 MB default.");
 DEFINE_int32(gc_thread_count, 0, "Number of garbage collection threads.");
+DEFINE_int64(max_gc_table_size, 1 << 19,
+    "Maximum number of events in the hash table used to GC previous events." \
+    "524288 events by default.");
+DEFINE_int64(max_gc_chunk_size, 1 << 20,
+    "Max #bytes to be GCed before a pause, 1 MB by default.");
+DEFINE_int64(min_events_to_gc, 1 << 16,
+    "Min #events in a stream to trigger GC, 65536 by default.");
 DEFINE_int64(duration, 0,
     "Lifetime of the proxy in seconds, 0 means infinite.");
 
@@ -85,7 +92,8 @@ int main(int argc, char **argv) {
 
   SprinklerNode node(FLAGS_id, FLAGS_port, role, nproxies, proxies,
       nstreams, local_streams, mem_buf_size, FLAGS_disk_chunk_size,
-      FLAGS_gc_thread_count);
+      FLAGS_gc_thread_count, FLAGS_min_events_to_gc,
+      FLAGS_max_gc_table_size, FLAGS_max_gc_chunk_size);
   node.start_proxy(FLAGS_duration);
 
   return 0;
