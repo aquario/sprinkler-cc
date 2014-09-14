@@ -54,6 +54,7 @@ void SprinklerNode::start_client(
   duration *= 1000000;
 
   tl_.tl_listen();
+  tl_.register_peer(proxies_[0].host, proxies_[0].port);
 
   int64_t time_to_pub = interval;
   for (;;) {

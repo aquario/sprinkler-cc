@@ -27,10 +27,7 @@ DEFINE_int64(min_events_to_gc, 1 << 16,
     "Min #events in a stream to trigger GC, 65536 by default.");
 DEFINE_int64(duration, 0,
     "Lifetime of the proxy in seconds, 0 means infinite.");
-
-// Prefix of proxy configuration file.  To get the full name, append the proxy
-// id to the end of this prefix.
-const std::string kPxCfgPrefix = "proxy-config-";
+DEFINE_string(expr_name, "default", "Name of current experiment.");
 
 // Format of a proxy configuration file:
 //   <role>
@@ -44,12 +41,18 @@ const std::string kPxCfgPrefix = "proxy-config-";
 
 int main(int argc, char **argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
+
+//  FLAGS_log_dir = "./logp";
+//  google::InitGoogleLogging(argv[0]);
+
   // Must provide a non-negative proxy id.
   CHECK_GT(FLAGS_id, -1);
   // Must provide a valid listening port.
   CHECK_GE(FLAGS_port, 10000);
 
-  std::string cfg_filename = kPxCfgPrefix + std::to_string(FLAGS_id);
+  std::string cfg_filename =
+      FLAGS_expr_name + "-proxy-config-" + std::to_string(FLAGS_id);
+  LOG(INFO) << "Reading config file " << cfg_filename;
   std::ifstream cfg_file(cfg_filename);
 
   int role = 0;
