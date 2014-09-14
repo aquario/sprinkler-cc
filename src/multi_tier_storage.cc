@@ -304,14 +304,15 @@ void MultiTierStorage::run_gc(int thread_id) {
   }
 
   // Round robin across these streams.
-  int i = -1;
+  int stream_idx = -1;
   while (true) {
-    if (++i == my_streams.size()) {
-      i = 0;
+    if (++stream_idx == my_streams.size()) {
+      stream_idx = 0;
     }
 
-    MemBuffer &membuf = mem_store_[my_streams[i]];
-    GcInfo &gc_info = metadata[my_streams[i]];
+    MemBuffer &membuf = mem_store_[my_streams[stream_idx]];
+    uint8_t *ptr = membuf.chunk;
+    GcInfo &gc_info = metadata[my_streams[stream_idx]];
     
     // Skip GC if there are too few events.
     if (distance(membuf.begin_offset, membuf.end_offset) < min_events_to_gc_) {
@@ -334,12 +335,12 @@ void MultiTierStorage::run_gc(int thread_id) {
       end_offset =
           (end_offset == 0 ? mem_buf_size_ - kEventLen : offset - kEventLen);
       // This has to be a data event.
-      CHECK_EQ(*end_offset, 0);
+      CHECK_EQ(*(ptr + end_offset), 0);
       gc_info.insert(get_begin_seq(offset));
     }
 
     // Perform GC with mutex.
-    pthread_mutex_lock(&mutex_[my_streams[i]]);
+    pthread_mutex_lock(&mutex_[my_streams[stream_idx]]);
 
     int64_t begin_seq = membuf.begin_seq;
     int64_t begin_offset = membuf.begin_offset;
@@ -359,9 +360,9 @@ void MultiTierStorage::run_gc(int thread_id) {
       // GCed, and turn them into (singleton) tombstones.
       int64_t cursor = begin_offset;
       while (cursor != pause_offset) {
-        if (is_data_event(cursor) &&
-            gc_info.table.count(get_begin_seq(cursor)) == 1) {
-          to_tombstone(cursor);
+        if (is_data_event(ptr + cursor) &&
+            gc_info.table.count(get_begin_seq(ptr + cursor)) == 1) {
+          to_tombstone(ptr + cursor);
         }
 
         cursor = next_offset(cursor);
@@ -379,11 +380,11 @@ void MultiTierStorage::run_gc(int thread_id) {
       int64_t lo = 0;
       while (cursor != begin_offset) {
         cursor = prev_offset(processed);
-        if (is_data_event(cursor)) {
+        if (is_data_event(ptr + cursor)) {
           // For data events, move them rightwards if necessary.
           processed = prev_offset(processed);
           if (cursor != processed) {
-            memmove(processed, cursor, kEventLen);
+            memmove(ptr + processed, ptr + cursor, kEventLen);
           }
           current_gc = false;
         } else {
@@ -394,14 +395,14 @@ void MultiTierStorage::run_gc(int thread_id) {
             current_gc = true;
             processed = prev_offset(processed);
             if (cursor != processed) {
-              memmove(processed, cursor, kEventLen);
+              memmove(ptr + processed, ptr + cursor, kEventLen);
             }
           } else {
             // Ranges of adjacent GC events should be continuous.
-            CHECK_EQ(get_end_seq(cursor), lo);
+            CHECK_EQ(get_end_seq(ptr + cursor), lo);
             // Update the lower bound for current GC event.
-            lo = get_begin_seq(cursor);
-            memmove(processed + 1, cursor + 1, 8);
+            lo = get_begin_seq(ptr + cursor);
+            memmove(ptr + processed + 1, ptr + cursor + 1, 8);
           }
         }
       }
@@ -413,20 +414,79 @@ void MultiTierStorage::run_gc(int thread_id) {
         // If the scan ended with a GC event, we should check if the event just
         // before begin_offset is also a GC event, and if so, merge them.
         cursor = prev_offset(begin_offset)
-        if (is_tombstone(cursor)) {
-          CHECK_EQ(get_end_seq(cursor), get_begin_seq(processed));
-          memmove(processed + 1, cursor + 1, 8);
+        if (is_tombstone(ptr + cursor)) {
+          CHECK_EQ(get_end_seq(ptr + cursor), get_begin_seq(ptr + processed));
+          memmove(ptr + processed + 1, ptr + cursor + 1, 8);
           // From this point on, begin_offset is used as the right boundary
           // of copying the previous chunk.
           begin_offset = cursor;
         }
 
         // TODO(haoyan): Move the data before begin_offset rightwards.
+        // Calculate the destination offset to shift the buffer.
         int64_t dist = distance(begin_offset, processed);
+        int64_t src_offset = membuf.begin_offset;
+        int64_t dst_offset = membuf.begin_offset + dist;
+        if (dst_offset >= mem_buf_size_) {
+          dst_offset -= mem_buf_size_;
+        }
 
+        // Offsets at which the source or destination buffer breaks.
+        std::vector<int> cutoffs;
+        if (begin_offset < membuf.begin_offset) {
+          cutoffs.push_back(mem_buf_size_ - membuf.begin_offset);
+        }
+        if (processed < dst_offset) {
+          cutoffs.push_back(mem_buf_size_ - processed);
+        }
+        cutoffs.push_back(0);
+        cutoffs.push_back(distance(membuf.begin_offset, begin_offset));
+
+        std::sort(cutoffs.begin(), cutoffs.end());
+        auto last = std::unique(cutoffs.begin(), cutoffs.end());
+        cutoffs.erase(last, cutoffs.end());
+
+        // Copy the memory chunks.  By using cutoffs, it is guaranteed that
+        // in each copy, [offset, offset + len) is a valid region, i.e., do not
+        // pass through offset mem_buf_size_.
+        for (int i = cutoffs.size() - 2; i >= 0; --i) {
+          int64_t this_src = src_offset + cutoffs[i];
+          if (this_src >= mem_buf_size_) {
+            this_src -= mem_buf_size_;
+          }
+          int64_t this_dst = dst_offset + cutoffs[i];
+          if (this_dst >= mem_buf_size_) {
+            this_dst -= mem_buf_size_;
+          }
+          int64_t this_len = cutoffs[i + 1] - cutoffs[i];
+          memmove(this_dst, this_src, this_len);
+        }
+
+        // Update offsets.
+        membuf.begin_offset = dst_offset;
+        // Advance to the next area.
+        begin_offset = pause_offset;
+        begin_seq = get_begin_seq(ptr + pause_offset);
+
+        // Release the lock so that other threads get a chance to enter.
+        pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
+        int rc = pthread_yield();
+        if (rc) {
+          LOG(ERROR) << "pthread_yield() failed on thread " << thread_id
+              << " with rc " << rc << ".";
+        }
+
+        // Re-aquire the lock before proceeding to another area.
+        pthread_mutex_lock(&mutex_[my_streams[stream_idx]]);
+        // Check if our new begin position is still valid.  If not, update it to
+        // the new begin position.
+        if (membuf.begin_seq > begin_seq) {
+          begin_offset = membuf.begin_offset;
+          begin_seq = membuf.begin_seq;
+        }
       }
     }
 
-    pthread_mutex_unlock(&mutex_[my_streams[i]]);
+    pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
   }
 }
