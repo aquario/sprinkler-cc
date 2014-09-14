@@ -21,6 +21,9 @@
 
 // TODO(haoyan): add EPOLL support if necessary.
 
+struct SprinklerSocket;
+typedef std::list<SprinklerSocket>::iterator SocketIter;
+
 // Data chunk to be sent out from a socket.
 struct Chunk {
   const uint8_t *data;
@@ -38,8 +41,8 @@ struct Chunk {
 // One of these is allocated for each socket.
 struct SprinklerSocket {
   int skt;
-  std::function<int(SprinklerSocket *)> input;
-  std::function<int(SprinklerSocket *)> output;
+  std::function<int(SocketIter)> input;
+  std::function<int(SocketIter)> output;
   bool first;      // controls call to l1->outgoing
   std::string descr;    // for debugging
   int sndbuf_size, rcvbuf_size;   // socket send and receive buffer sizes
@@ -66,8 +69,8 @@ struct SprinklerSocket {
 
   // Constructor.
   SprinklerSocket(int skt,
-      std::function<int(SprinklerSocket *)> input,
-      std::function<int(SprinklerSocket *)> output,
+      std::function<int(SocketIter)> input,
+      std::function<int(SocketIter)> output,
       std::function<void(const uint8_t *, int,
           std::function<void(void *)>, void *)> deliver,
       const std::string &descr,
@@ -77,7 +80,9 @@ struct SprinklerSocket {
       descr(descr), host(host), port(port) {
     first = true;
     sndbuf_size = rcvbuf_size = 0;
+    ctrl_cqueue = std::list<Chunk>();
     ctrl_offset = ctrl_remainder = 0;
+    data_cqueue = std::list<Chunk>();
     data_offset = data_remainder = 0;
     recv_buffer = NULL;
     received = 0;
@@ -92,8 +97,8 @@ struct SocketAddr {
   sockaddr_in sin;
   std::string host;
   int port;
-  SprinklerSocket *out;    // outgoing connection
-  SprinklerSocket *in;     // incoming connection
+  SocketIter out;    // outgoing connection
+  SocketIter in;     // incoming connection
 };
 
 // Connection manager that manages all the socket connections.
@@ -147,9 +152,9 @@ class TransportLayer {
   // Add a new socket to the list of sockets that we know about.
   // Returns the address of that SprinklerSocket object so that upper
   // layers could reference.
-  SprinklerSocket *add_socket(int skt,
-      std::function<int(SprinklerSocket *)> input,
-      std::function<int(SprinklerSocket *)> output,
+  SocketIter add_socket(int skt,
+      std::function<int(SocketIter)> input,
+      std::function<int(SocketIter)> output,
       std::function<void(const uint8_t *, int,
           std::function<void(void *)>, void *)> deliver,
       const std::string &descr, std::string host, int port);
@@ -159,7 +164,7 @@ class TransportLayer {
   // buffer the message, and send it when TransportLayer::wait() is invoked.
   // Data buffer is freed by calling the cleanup handler after the data is
   // sent and the chunk's deconstructor is called.
-  void async_socket_send(SprinklerSocket *ss,
+  void async_socket_send(SocketIter ss,
       const uint8_t *data, int size, bool is_ctrl,
       std::function<void(void *)> cleanup, void *env);
 
@@ -169,16 +174,16 @@ class TransportLayer {
       struct iovec *iov, int start);
 
   // The socket is ready for writing.  Try to send everything that is queued.
-  int send_ready(SprinklerSocket *ss);
+  int send_ready(SocketIter ss);
 
   // Input is available on some socket.  Peers send packets that are
   // up to size kMaxChunkSize and start with a 4 byte header, the first
   // three of which contain the actual packet size (including the header
   // itself).
-  int recv_ready(SprinklerSocket *ss);
+  int recv_ready(SocketIter ss);
 
   // Invoked when there is a client waiting on the server socket.
-  int got_client(SprinklerSocket *ls);
+  int got_client(SocketIter ss);
 
   // Get inet address from (host, port).
   bool get_inet_address(struct sockaddr_in *sin, const char *addr, int port);

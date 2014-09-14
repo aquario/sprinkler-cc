@@ -47,26 +47,28 @@ int64_t TransportLayer::uptime() {
   return result;
 }
 
-SprinklerSocket *TransportLayer::add_socket(int skt,
-    std::function<int(SprinklerSocket *)> input,
-    std::function<int(SprinklerSocket *)> output,
+SocketIter TransportLayer::add_socket(int skt,
+    std::function<int(SocketIter)> input,
+    std::function<int(SocketIter)> output,
     std::function<void(const uint8_t *, int,
         std::function<void(void *)>, void *)> deliver,
     const std::string &descr, std::string host, int port) {
+  VLOG(kLogLevel) << "add_socket";
   SprinklerSocket ss(skt, input, output, deliver, descr, host, port);
   ss.init();
 
   sockets_.push_back(ss);
   ++nsockets_;
 
-  return &(*sockets_.rbegin());
+  auto iter = sockets_.end();
+  return --iter;
 }
 
 void TransportLayer::async_socket_send(
-    SprinklerSocket *ss, const uint8_t *data, int size, bool is_ctrl,
+    SocketIter ss, const uint8_t *data, int size, bool is_ctrl,
     std::function<void(void *)> cleanup, void *env) {
   VLOG(kLogLevel) << "async_socket_send: send " << size << " bytes.";
-  CHECK(ss);
+  CHECK(ss != sockets_.end());
 
   Chunk chunk(data, size, cleanup, env);
 
@@ -113,7 +115,7 @@ int TransportLayer::prepare_iovec(const std::list<Chunk> &cqueue, int offset,
   return iovlen;
 }
 
-int TransportLayer::send_ready(SprinklerSocket *ss) {
+int TransportLayer::send_ready(SocketIter ss) {
   VLOG(kLogLevel) << "send_ready: ctrl_offset = " << ss->ctrl_offset
             << "; ctrl_remainder = " << ss->ctrl_remainder
             << "; data_offset = " << ss->data_offset
@@ -204,7 +206,7 @@ std::string TransportLayer::get_endpoint(std::string host, int port) {
   return std::to_string(port) + "|" + host;
 }
 
-int TransportLayer::recv_ready(SprinklerSocket *ss) {
+int TransportLayer::recv_ready(SocketIter ss) {
   VLOG(kLogLevel) << "recv_ready";
   if (ss->recv_buffer == NULL) {
     ss->recv_buffer = static_cast<uint8_t *>(dcalloc(kMaxChunkSize, 1));
@@ -287,7 +289,7 @@ int TransportLayer::recv_ready(SprinklerSocket *ss) {
   return 1;
 }
 
-int TransportLayer::got_client(SprinklerSocket *ss) {
+int TransportLayer::got_client(SocketIter ss) {
   int clt;
   struct sockaddr_in sin;
   socklen_t len = sizeof(sin);
@@ -404,12 +406,13 @@ void TransportLayer::register_peer(const std::string &host, int port) {
   socket_addr.sin = sin;
   socket_addr.host = host;
   socket_addr.port = port;
+  socket_addr.in = socket_addr.out = sockets_.end();
   addr_list_[endpoint] = socket_addr;
 }
 
 void TransportLayer::try_connect(SocketAddr *socket_addr) {
-  VLOG(kLogLevel) << "out addr: " << (uint64_t) socket_addr->out;
-  if (socket_addr->out == NULL) {
+  VLOG(kLogLevel) << "out socket: " << socket_addr->out->skt;
+  if (socket_addr->out == sockets_.end()) {
     // Create the socket.
     int skt = socket(AF_INET, SOCK_STREAM, 0);
     if (skt < 0) {
@@ -464,13 +467,13 @@ bool TransportLayer::async_send_message(const std::string &host, int port,
   // There should be an entry for this endpoint.
   CHECK_EQ(addr_list_.count(endpoint), 1) << host << ':' << port;
   SocketAddr &sock_addr = addr_list_[endpoint];
-  SprinklerSocket *ss = sock_addr.out;
-  if (ss == NULL) {
+  SocketIter ss = sock_addr.out;
+  if (ss == sockets_.end()) {
     // If not connected, try to reconnect.
     VLOG(kLogLevel) << "No connection, recoonect to " << host << ":" << port;
     try_connect(&sock_addr);
     ss = sock_addr.out;
-    if (ss == NULL) {
+    if (ss == sockets_.end()) {
       // If reconnect failed ...
       return false;
     }
@@ -568,7 +571,7 @@ bool TransportLayer::handle_events(struct pollfd *fds, int n) {
       continue;
     }
     if (events & (POLLIN | POLLHUP)) {
-      if (!(sit->input)(&*sit)) {
+      if (!(sit->input)(sit)) {
         VLOG(kLogLevel) << "handle_events: closing socket";
         close(sit->skt);
         sit->skt = -1;
@@ -576,7 +579,7 @@ bool TransportLayer::handle_events(struct pollfd *fds, int n) {
       }
     }
     if (events & POLLOUT) {
-      (sit->output)(&*sit);
+      (sit->output)(sit);
     }
     if (events & POLLERR) {
       LOG(ERROR) << "POLLERR";
@@ -597,7 +600,7 @@ void TransportLayer::remove_closed_sockets() {
       if (sit->port != 0) {
         std::string endpoint = get_endpoint(sit->host, sit->port);
         if (addr_list_.count(endpoint) == 1) {
-          addr_list_[endpoint].out = NULL;
+          addr_list_[endpoint].out = sockets_.end();
           break;
         }
       }
