@@ -15,7 +15,7 @@ void itos(uint8_t *dst, uint64_t val, int len) {
 uint64_t stoi(const uint8_t *src, int len) {
   uint64_t result = 0;
   for (int i = 0; i < len; ++i) {
-    result |= (static_cast<uint64_t>(*src)) << (i * 8);
+    result |= static_cast<uint64_t>(*(src + i)) << (i * 8);
   }
   return result;
 }
