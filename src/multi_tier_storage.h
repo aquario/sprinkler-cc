@@ -23,7 +23,7 @@ class MultiTierStorage {
   MultiTierStorage(int nstreams, int64_t mem_buf_size, int64_t disk_chunk_size,
       int gc_thread_count, int64_t min_events_to_gc,
       int64_t max_gc_table_size, int64_t max_gc_chunk_size)
-    : nstreams_(nstreams), mem_store_(nstreams),
+    : nstreams_(nstreams),
       mutex_(nstreams), next_chunk_no_(nstreams, 0),
       max_gc_table_size_(max_gc_table_size),
       max_gc_chunk_size_(max_gc_chunk_size),
@@ -32,6 +32,9 @@ class MultiTierStorage {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
     disk_chunk_size_ = disk_chunk_size;
+
+    // This goes here since it needs mem_buf_size_.
+    mem_store_ = std::vector<MemBuffer>(nstreams);
 
     // Initialize mutexes.
     for (int i = 0; i < nstreams; ++i) {
@@ -79,6 +82,7 @@ class MultiTierStorage {
       begin_offset = end_offset = 0;
       is_empty = true;
       chunk = static_cast<uint8_t *>(dcalloc(mem_buf_size_, 1));
+      CHECK_NOTNULL(chunk);
     }
 
     ~MemBuffer() {

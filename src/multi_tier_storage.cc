@@ -126,7 +126,7 @@ void MultiTierStorage::put_events(
 int64_t MultiTierStorage::get_events(
     int sid, int64_t first_seq, int64_t max_events, uint8_t *buffer) {
   VLOG(kLogLevel) << "get_events: stream " << sid << "; staring at "
-      << first_seq << "; at most " << nevents << " events are needed.";
+      << first_seq << "; at most " << max_events << " events are needed.";
   // first_seq is too large.
   if (first_seq >= mem_store_[sid].end_seq) {
     return kErrFuture;
