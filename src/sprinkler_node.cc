@@ -346,6 +346,5 @@ void SprinklerNode::handle_client_publish(const uint8_t *data) {
 }
 
 void SprinklerNode::release_chunk(void *chunk) {
-  LOG(INFO) << "Chunk released.";
   dfree(chunk);
 }
