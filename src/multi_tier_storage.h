@@ -82,8 +82,7 @@ class MultiTierStorage {
       begin_offset = end_offset = 0;
       is_empty = true;
       chunk = static_cast<uint8_t *>(dcalloc(mem_buf_size_, 1));
-      CHECK_NOTNULL(chunk)
-          << "Error allocating in-memory buffer: not enough memory.";
+      CHECK_NOTNULL(chunk);
     }
 
     ~MemBuffer() {
