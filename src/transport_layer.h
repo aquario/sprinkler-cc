@@ -80,9 +80,7 @@ struct SprinklerSocket {
       descr(descr), host(host), port(port) {
     first = true;
     sndbuf_size = rcvbuf_size = 0;
-    ctrl_cqueue = std::list<Chunk>();
     ctrl_offset = ctrl_remainder = 0;
-    data_cqueue = std::list<Chunk>();
     data_offset = data_remainder = 0;
     recv_buffer = NULL;
     received = 0;

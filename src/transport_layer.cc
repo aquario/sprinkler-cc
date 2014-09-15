@@ -225,7 +225,7 @@ int TransportLayer::recv_ready(SocketIter ss) {
   int n = do_recv(ss->skt, ss->recv_buffer + ss->received, size - ss->received);
   if (n == 0) {
     VLOG(kLogLevel) << "recv_ready: EOF " << ss->skt << " " << ss->received
-      << " " << ss->descr;
+        << " " << ss->descr;
     return 0;
   }
   if (n < 0) {
@@ -260,7 +260,7 @@ int TransportLayer::recv_ready(SocketIter ss) {
     ss->recv_buffer = static_cast<uint8_t *>(drealloc(ss->recv_buffer, size));
     ss->deliver(ss->recv_buffer + 4, size - 4,
         release_chunk, ss->recv_buffer);
-    ss->recv_buffer = 0;
+    ss->recv_buffer = NULL;
     return 1;
   }
 
@@ -269,7 +269,7 @@ int TransportLayer::recv_ready(SocketIter ss) {
   do {
     // Deliver a part of the chunk.
     uint8_t *copy = static_cast<uint8_t *>(dmalloc(size - 4));
-    memcpy(copy, ss->recv_buffer + offset + 4, size - 4);
+    memmove(copy, ss->recv_buffer + offset + 4, size - 4);
     ss->deliver(copy, size - 4, release_chunk, copy);
     offset += size;
 
@@ -284,7 +284,8 @@ int TransportLayer::recv_ready(SocketIter ss) {
   } while (size <= remainder);
 
   // Copy the rest to the beginning of the chunk.
-  memcpy(ss->recv_buffer, ss->recv_buffer + offset, remainder);
+  memmove(ss->recv_buffer, ss->recv_buffer + offset, remainder);
+  ss->received = remainder;
 
   return 1;
 }
@@ -588,7 +589,7 @@ bool TransportLayer::handle_events(struct pollfd *fds, int n) {
       LOG(ERROR) << "POLLNVAL";
     }
   }
-  LOG(ERROR) << "return closed_sockets: " << closed_sockets;
+  VLOG(kLogLevel) << "return closed_sockets: " << closed_sockets;
   return closed_sockets;
 }
 

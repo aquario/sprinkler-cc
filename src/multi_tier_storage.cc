@@ -56,15 +56,12 @@ void MultiTierStorage::put_raw_events(
   // Next, format events with seq#'s.
   for (int i = 0; i < nevents; ++i) {
     itos(ptr + end_offset + 1, mem_store_[sid].end_seq, 8);
-    memmove(ptr + end_offset + 9, data + i * kEventLen, kRawEventLen);
-    end_offset += kEventLen;
-    if (end_offset == mem_buf_size_) {
-      end_offset = 0;
-    }
-    // TODO(haoyan): Change this to LOG_EVERY_N when load gets heavier.
-    LOG(INFO) << "PUT " << sid << " " << mem_store_[sid].end_seq;
+    memmove(ptr + end_offset + 9, data + i * kRawEventLen, kRawEventLen);
+    end_offset = next_offset(end_offset);
     ++mem_store_[sid].end_seq;
   }
+  // TODO(haoyan): Change this to LOG_EVERY_N when load gets heavier.
+  LOG(INFO) << "PUT " << sid << " " << (mem_store_[sid].end_seq - 1);
 
   // Finally, set the new end_offset and empty flag.
   mem_store_[sid].end_offset = end_offset;

@@ -58,6 +58,8 @@ void SprinklerNode::start_client(
       << " batch_size = " << batch_size;
   // This node must be a client. 
   CHECK_EQ(role_, 0); 
+  // Batch size must not exceed the maximum allowed.
+  CHECK_LE(batch_size, kMaxRawEventsPerMsg);
   // Convert duration to microseconds.
   duration *= 1000000;
 
@@ -333,13 +335,6 @@ void SprinklerNode::handle_client_publish(const uint8_t *data) {
 
   VLOG(kLogLevel) << "handle_client_publish from client " << cid
       << " on stream " << sid << " with " << nevents << " events";
-
-  // For debug only
-  std::string message = "";
-  for (int i = 0; i < 28; ++i) {
-    message += std::to_string(*(data + i)) + " ";
-  }
-  VLOG(kLogLevel) << message;
 
   storage_.put_raw_events(sid, nevents, data + 12);
 }
