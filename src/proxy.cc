@@ -23,7 +23,7 @@ DEFINE_int64(max_gc_table_size, 1 << 19,
     "Maximum number of events in the hash table used to GC previous events." \
     "524288 events by default.");
 DEFINE_int64(max_gc_chunk_size, 1 << 20,
-    "Max #bytes to be GCed before a pause, 1 MB by default.");
+    "Max #bytes to be GCed before a pause in bytes, 1 MB by default.");
 DEFINE_int64(min_events_to_gc, 1 << 16,
     "Min #events in a stream to trigger GC, 65536 by default.");
 DEFINE_int64(duration, 0,
@@ -94,6 +94,18 @@ int main(int argc, char **argv) {
   // Determine the size of in-memory buffer per stream.
   // For convenience of alignment, it is set to be multiples of event length.
   int64_t mem_buf_size = (FLAGS_mem_cap / nstreams / kEventLen) * kEventLen;
+
+  LOG(INFO) << "Starting proxy " << FLAGS_id << " ...\n"
+      << "Experiment: " << FLAGS_expr_name << ".\n"
+      << "Duration: " << FLAGS_duration << " seconds.\n"
+      << "Role of this proxy: " << role << ".\n"
+      << "Listening to port " << FLAGS_port << ".\n"
+      << "Number of straems: " << nstreams << ".\n"
+      << "In-memory buffer for each stream: " << mem_buf_size << " bytes.\n"
+      << "Data chunks on disk: " << FLAGS_disk_chunk_size << " bytes.\n"
+      << "Number of GC threads: " << FLAGS_gc_thread_count << ".\n"
+      << "Max GC table size: " << FLAGS_max_gc_table_size << " events.\n"
+      << "Max GC chunk size: " << FLAGS_max_gc_chunk_size << " bytes.\n";
 
   SprinklerNode node(FLAGS_id, FLAGS_port, role, nproxies, proxies,
       nstreams, local_streams, mem_buf_size, FLAGS_disk_chunk_size,

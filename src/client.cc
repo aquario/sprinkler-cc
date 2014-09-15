@@ -46,6 +46,14 @@ int main(int argc, char **argv) {
 
   std::vector<Proxy> proxies;
   proxies.push_back(proxy);
+
+  LOG(INFO) << "Starting client " << FLAGS_id << " ...\n"
+      << "Duration: " << FLAGS_duration << " seconds.\n"
+      << "Publish to straem " << FLAGS_stream_id << ".\n"
+      << "Proxy: (" << FLAGS_proxy_id << ", "
+      << FLAGS_proxy_host << ", " << FLAGS_proxy_port << ")\n"
+      << "Publish interval: " << FLAGS_interval << " microseconds.\n"
+      << "Batch size: " << FLAGS_batch_size << ".\n";
   
   SprinklerNode node(FLAGS_id, FLAGS_listen_port, SprinklerNode::kClient,
       FLAGS_stream_id, proxies);

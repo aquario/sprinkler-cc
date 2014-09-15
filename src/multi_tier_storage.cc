@@ -129,10 +129,12 @@ int64_t MultiTierStorage::get_events(
     return kErrFuture;
   }
 
+  pthread_mutex_lock(&mutex_[sid]);
   // first_seq is not in memory.
   if (first_seq < mem_store_[sid].begin_seq) {
     // TODO(haoyan): Fetch events from disk.
     LOG(WARNING) << "Data not found in memory.";
+    pthread_mutex_unlock(&mutex_[sid]);
     return kErrPast;
   } else {
     // Everything wanted is in-memory.
@@ -162,6 +164,7 @@ int64_t MultiTierStorage::get_events(
       memmove(buffer + (mem_buf_size_ - begin_offset),
           mem_store_[sid].chunk, end_offset);
     }
+    pthread_mutex_unlock(&mutex_[sid]);
 
     // nevents == 0 indicates an error behavior and should've been caught above.
     CHECK_NE(nevents, 0);
@@ -267,6 +270,8 @@ int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
 }
 
 void MultiTierStorage::flush_to_disk(int sid) {
+  pthread_mutex_lock(&mutex_[sid]);
+
   int64_t begin_offset = mem_store_[sid].begin_offset;
   uint8_t *ptr = mem_store_[sid].chunk;
   int unit_size = sizeof(uint8_t);
@@ -274,7 +279,7 @@ void MultiTierStorage::flush_to_disk(int sid) {
   std::string filename = get_chunk_name(sid, next_chunk_no_[sid]);
   FILE *fout = fopen(filename.c_str(), "wb");
 
-  if (mem_store_[sid].begin_offset + disk_chunk_size_ <= mem_buf_size_) {
+  if (begin_offset + disk_chunk_size_ <= mem_buf_size_) {
     // No carry-over, a single write is sufficient.
     fwrite(ptr + begin_offset, unit_size, disk_chunk_size_, fout);
   } else {
@@ -283,10 +288,18 @@ void MultiTierStorage::flush_to_disk(int sid) {
     fwrite(ptr, unit_size,
         disk_chunk_size_ - (mem_buf_size_ - begin_offset), fout);
   }
+  begin_offset += disk_chunk_size_;
+  if (begin_offset >= mem_buf_size_) {
+    begin_offset -= mem_buf_size_;
+  }
+  mem_store_[sid].begin_seq = get_begin_seq(ptr + begin_offset);
+  mem_store_[sid].begin_offset = begin_offset;
 
   fclose(fout);
   used_chunk_no_[sid].push_back(next_chunk_no_[sid]);
   ++next_chunk_no_[sid];
+
+  pthread_mutex_unlock(&mutex_[sid]);
 }
 
 std::string MultiTierStorage::get_chunk_name(int sid, int64_t chunk_id) {

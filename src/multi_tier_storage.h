@@ -24,7 +24,7 @@ class MultiTierStorage {
       int gc_thread_count, int64_t min_events_to_gc,
       int64_t max_gc_table_size, int64_t max_gc_chunk_size)
     : nstreams_(nstreams),
-      mutex_(nstreams), next_chunk_no_(nstreams, 0),
+      mutex_(nstreams), next_chunk_no_(nstreams, 0), used_chunk_no_(nstreams),
       max_gc_table_size_(max_gc_table_size),
       max_gc_chunk_size_(max_gc_chunk_size),
       gc_thread_count_(gc_thread_count), min_events_to_gc_(min_events_to_gc),

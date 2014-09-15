@@ -143,6 +143,11 @@ class SprinklerNode {
   // Add events published from local clients.
   void handle_client_publish(const uint8_t *data);
 
+  // If this proxy is the tail in a chain, releases the message buffer,
+  // otherwise, forward the message to the next node in the chain.
+  void forward_or_release(const uint8_t *data, int size,
+      bool is_ctrl, std::function<void(void *)> release, void *env);
+
   // Release a chunk of memory.
   static void release_chunk(void *);
 

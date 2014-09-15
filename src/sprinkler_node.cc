@@ -7,8 +7,6 @@
 #include "sprinkler_workload.h"
 
 void SprinklerNode::start_proxy(int64_t duration) {
-  VLOG(kLogLevel) << "Staring proxy " << id_ << " for " << duration
-      << " seconds, role = " << role_;
   // This node must be a proxy. 
   CHECK(role_); 
   // Convert duration to microseconds.
@@ -53,9 +51,6 @@ void SprinklerNode::start_proxy(int64_t duration) {
 
 void SprinklerNode::start_client(
     int64_t duration, int interval, int batch_size) {
-  VLOG(kLogLevel) << "Staring client " << id_ << " for " << duration
-      << " seconds, publish interval = " << interval
-      << " batch_size = " << batch_size;
   // This node must be a client. 
   CHECK_EQ(role_, 0); 
   // Batch size must not exceed the maximum allowed.
@@ -88,6 +83,19 @@ void SprinklerNode::start_client(
   }
 }
 
+void SprinklerNode::forward_or_release(const uint8_t *data, int size,
+    bool is_ctrl, std::function<void(void *)> release, void *env) {
+  if (role_ & kTail) {
+    release(env);
+  } else {
+    // Forward the message to the next node in the chain.
+    if (!tl_.async_send_message(proxies_[0].host, proxies_[0].port,
+          data, size, is_ctrl, release, env)) {
+      LOG(ERROR) << "Cannot talk to the successor node. Is it failing?";
+    }
+  }
+}
+
 void SprinklerNode::outgoing(const std::string &host, int port) {
   // Do nothing if this is a proxy.
   // TODO(haoyan): register host:port for shuffling if this is a client.
@@ -105,33 +113,31 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
     case kAdvMsg:
       CHECK(role_);   // Has something, i.e., not a client.
       decode_adv(data);
-      if (role_ & kTail) {
-        release(env);
-      } else {
-        // Forward the message to the next node in the chain.
-        if (!tl_.async_send_message(proxies_[0].host, proxies_[0].port,
-              data, size, true, release, env)) {
-          LOG(ERROR) << "Cannot talk to the successor node. Is it failing?";
-        }
-      }
+      forward_or_release(data, size, true, release, env);
       break;
     case kSubMsg:
       CHECK(role_);   // Has something, i.e., not a client.
       handle_subscription(data);
+      forward_or_release(data, size, true, release, env);
       break;
     case kUnsubMsg:
       CHECK(role_);   // Has something, i.e., not a client.
+      handle_unsubscription(data);
+      forward_or_release(data, size, true, release, env);
       break;
     case kPxPubMsg:
       CHECK(role_);   // Has something, i.e., not a client.
       handle_proxy_publish(data);
+      forward_or_release(data, size, false, release, env);
       break;
     case kCliPubMsg:
       CHECK(role_);   // Has something, i.e., not a client.
       handle_client_publish(data);
+      forward_or_release(data, size, false, release, env);
       break;
     default:
       LOG(ERROR) << "Unrecognized message type: " << msg_type;
+      release(env);
   }
 }
 
