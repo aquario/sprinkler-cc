@@ -7,6 +7,8 @@
 #include "sprinkler_workload.h"
 
 void SprinklerNode::start_proxy(int64_t duration) {
+  VLOG(kLogLevel) << "Staring proxy " << id_ << " for " << duration
+      << " seconds, role = " << role_;
   // This node must be a proxy. 
   CHECK(role_); 
   // Convert duration to microseconds.
@@ -51,6 +53,9 @@ void SprinklerNode::start_proxy(int64_t duration) {
 
 void SprinklerNode::start_client(
     int64_t duration, int interval, int batch_size) {
+  VLOG(kLogLevel) << "Staring client " << id_ << " for " << duration
+      << " seconds, publish interval = " << interval
+      << " batch_size = " << batch_size;
   // This node must be a client. 
   CHECK_EQ(role_, 0); 
   // Convert duration to microseconds.
@@ -293,6 +298,8 @@ void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
 }
 
 void SprinklerNode::client_publish(int batch_size) {
+  VLOG(kLogLevel) << "client_publish: client_id = " << id_
+      << " on stream " << client_sid_ << " with " << batch_size << " events";
   int64_t len = 12 + batch_size * kRawEventLen;
   uint8_t *msg =
       static_cast<uint8_t *>(dcalloc(TransportLayer::kMaxChunkSize, 1));
@@ -300,9 +307,16 @@ void SprinklerNode::client_publish(int batch_size) {
   itos(msg + 1, id_, 2);
   *(msg + 3) = client_sid_;
   itos(msg + 4, batch_size, 8);
-  for (int i = 0; i < batch_size; i++) {
+  for (int i = 0; i < batch_size; ++i) {
     itos(msg + 12 + i * kRawEventLen, SprinklerWorkload::get_next_key(), 8);
   }
+
+  // For debug only
+  std::string message = "";
+  for (int i = 0; i < 28; ++i) {
+    message += std::to_string(*(msg + i)) + " ";
+  }
+  VLOG(kLogLevel) << message;
   
   if (!tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,
         false, release_chunk, msg)) {
@@ -319,6 +333,13 @@ void SprinklerNode::handle_client_publish(const uint8_t *data) {
 
   VLOG(kLogLevel) << "handle_client_publish from client " << cid
       << " on stream " << sid << " with " << nevents << " events";
+
+  // For debug only
+  std::string message = "";
+  for (int i = 0; i < 28; ++i) {
+    message += std::to_string(*(data + i)) + " ";
+  }
+  VLOG(kLogLevel) << message;
 
   storage_.put_raw_events(sid, nevents, data + 12);
 }
