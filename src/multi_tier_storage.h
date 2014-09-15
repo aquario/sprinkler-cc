@@ -28,7 +28,8 @@ class MultiTierStorage {
       max_gc_table_size_(max_gc_table_size),
       max_gc_chunk_size_(max_gc_chunk_size),
       gc_thread_count_(gc_thread_count), min_events_to_gc_(min_events_to_gc),
-      gc_threads_(gc_thread_count), gc_hints_(gc_thread_count) {
+      gc_threads_(gc_thread_count), gc_hints_(gc_thread_count),
+      bytes_saved_(nstreams) {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
     disk_chunk_size_ = disk_chunk_size;
@@ -108,8 +109,6 @@ class MultiTierStorage {
   };
 
   // Return the number of bytes in circular buffer range [begin, end).
-  // Exception: when begin == end, returns mem_buf_size_. The 0 case
-  // is covered by checking MemBuffer.is_emtpy.
   int64_t distance(int64_t begin, int64_t end);
 
   // Returns the amount of free space available in a MemBuffer, in bytes.
@@ -184,6 +183,8 @@ class MultiTierStorage {
   std::vector<pthread_t> gc_threads_;
   // Context hints for each thread.
   std::vector<GcHint> gc_hints_;
+  // Space saved by GC for each stream, in bytes.
+  std::vector<int64_t> bytes_saved_;
 
   // Size of an on-disk data chunk in bytes.
   static int64_t disk_chunk_size_;

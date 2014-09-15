@@ -33,6 +33,9 @@ int64_t get_end_seq(const uint8_t *event);
 // return true if begin <= seq# < end holds.
 bool in_range(const uint8_t *event, int64_t seq);
 
+// Returns the object id in a data event.
+int64_t get_object_id(const uint8_t *event);
+
 // Convert a data event into a singleton tombstone.
 void to_tombstone(uint8_t *event);
 

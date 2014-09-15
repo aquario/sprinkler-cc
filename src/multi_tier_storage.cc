@@ -14,6 +14,7 @@ int64_t MultiTierStorage::mem_buf_size_;
 int64_t MultiTierStorage::disk_chunk_size_;
 
 void MultiTierStorage::init_gc() {
+  LOG(INFO) << "Initialize " << gc_thread_count_ << " GC threads ...";
   if (gc_thread_count_ > 0) {
     for (int i = 0; i < gc_thread_count_; ++i) {
       gc_hints_[i].ptr = this;
@@ -173,7 +174,7 @@ int64_t MultiTierStorage::get_events(
 }
 
 int64_t MultiTierStorage::distance(int64_t begin, int64_t end) {
-  if (end > begin) {
+  if (end >= begin) {
     return end - begin;
   } else {
     return mem_buf_size_ - (begin - end);
@@ -184,7 +185,11 @@ int64_t MultiTierStorage::get_used_space(const MemBuffer &membuf) {
   if (membuf.is_empty) {
     return 0;
   }
-  return distance(membuf.begin_offset, membuf.end_offset);
+  int64_t result = distance(membuf.begin_offset, membuf.end_offset);
+  if (result == 0) {
+    result = mem_buf_size_;
+  }
+  return result;
 }
 
 int64_t MultiTierStorage::get_free_space(const MemBuffer &membuf) {
@@ -338,8 +343,9 @@ void MultiTierStorage::run_gc(int thread_id) {
     GcInfo &gc_info = metadata[my_streams[stream_idx]];
     
     // Skip GC if there are too few events.
-    if (distance(membuf.begin_offset, membuf.end_offset) / kEventLen
-        < min_events_to_gc_) {
+    int64_t total_events =
+        distance(membuf.begin_offset, membuf.end_offset) / kEventLen;
+    if (total_events < min_events_to_gc_) {
       continue;
     }
 
@@ -359,8 +365,13 @@ void MultiTierStorage::run_gc(int thread_id) {
       end_offset = prev_offset(end_offset);
       // This has to be a data event.
       CHECK_EQ(*(ptr + end_offset), 0);
-      gc_info.table.insert(get_begin_seq(ptr + end_offset));
+      int64_t key = get_object_id(ptr + end_offset);
+      gc_info.table.insert(key);
+//      VLOG(kLogLevel) << "Insert key " << key << " into GC table";
     }
+    VLOG(kLogLevel) << "Constructed GC table in [" << end_offset << ", "
+        << membuf.end_offset << ") with " << gc_info.table.size()
+        << " distinct events";
 
     // Perform GC with mutex.
     pthread_mutex_lock(&mutex_[my_streams[stream_idx]]);
@@ -379,12 +390,15 @@ void MultiTierStorage::run_gc(int thread_id) {
         pause_offset = end_offset;
       }
 
+      VLOG(kLogLevel) << "Starting GC on [" << begin_offset << ", "
+          << pause_offset << ")";
+
       // b) In buffer [begin_offset, pause_offset), scan for events should be
       // GCed, and turn them into (singleton) tombstones.
       int64_t cursor = begin_offset;
       while (cursor != pause_offset) {
         if (is_data_event(ptr + cursor) &&
-            gc_info.table.count(get_begin_seq(ptr + cursor)) == 1) {
+            gc_info.table.count(get_object_id(ptr + cursor)) == 1) {
           to_tombstone(ptr + cursor);
         }
 
@@ -402,7 +416,10 @@ void MultiTierStorage::run_gc(int thread_id) {
       bool current_gc = false;
       int64_t lo = 0;
       while (cursor != begin_offset) {
-        cursor = prev_offset(processed);
+        cursor = prev_offset(cursor);
+//        VLOG(kLogLevel) << "Event# -- cursor: " << cursor / kEventLen
+//            << "; processed: " << processed / kEventLen
+//            << "; lo: " << lo << "; current_gc: " << current_gc;
         if (is_data_event(ptr + cursor)) {
           // For data events, move them rightwards if necessary.
           processed = prev_offset(processed);
@@ -424,11 +441,13 @@ void MultiTierStorage::run_gc(int thread_id) {
             // Ranges of adjacent GC events should be continuous.
             CHECK_EQ(get_end_seq(ptr + cursor), lo);
             // Update the lower bound for current GC event.
-            lo = get_begin_seq(ptr + cursor);
             memmove(ptr + processed + 1, ptr + cursor + 1, 8);
           }
+          lo = get_begin_seq(ptr + cursor);
         }
       }
+
+      bytes_saved_[my_streams[stream_idx]] += distance(begin_offset, processed);
 
       // d) Squeeze the buffer rightwards.
       // If there is valid buffer region before where we started, we need
@@ -443,6 +462,7 @@ void MultiTierStorage::run_gc(int thread_id) {
           // From this point on, begin_offset is used as the right boundary
           // of copying the previous chunk.
           begin_offset = cursor;
+          bytes_saved_[my_streams[stream_idx]] += kEventLen;
         }
 
         // TODO(haoyan): Move the data before begin_offset rightwards.
@@ -487,29 +507,36 @@ void MultiTierStorage::run_gc(int thread_id) {
 
         // Update offsets.
         membuf.begin_offset = dst_offset;
-        // Advance to the next area.
-        begin_offset = pause_offset;
-        begin_seq = get_begin_seq(ptr + pause_offset);
+      } else {
+        membuf.begin_offset = processed;
+      }
 
-        // Release the lock so that other threads get a chance to enter.
-        pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
-        int rc = pthread_yield();
-        if (rc) {
-          LOG(ERROR) << "pthread_yield() failed on thread " << thread_id
-              << " with rc " << rc << ".";
-        }
+      VLOG(kLogLevel) << "New starting offset: " << membuf.begin_offset;
 
-        // Re-aquire the lock before proceeding to another area.
-        pthread_mutex_lock(&mutex_[my_streams[stream_idx]]);
-        // Check if our new begin position is still valid.  If not, update it to
-        // the new begin position.
-        if (membuf.begin_seq > begin_seq) {
-          begin_offset = membuf.begin_offset;
-          begin_seq = membuf.begin_seq;
-        }
+      // Advance to the next area.
+      begin_offset = pause_offset;
+      begin_seq = get_begin_seq(ptr + pause_offset);
+
+      // Release the lock so that other threads get a chance to enter.
+      pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
+      int rc = pthread_yield();
+      if (rc) {
+        LOG(ERROR) << "pthread_yield() failed on thread " << thread_id
+          << " with rc " << rc << ".";
+      }
+
+      // Re-aquire the lock before proceeding to another area.
+      pthread_mutex_lock(&mutex_[my_streams[stream_idx]]);
+      // Check if our new begin position is still valid.  If not, update it to
+      // the new begin position.
+      if (membuf.begin_seq > begin_seq) {
+        begin_offset = membuf.begin_offset;
+        begin_seq = membuf.begin_seq;
       }
     }
 
+    LOG(INFO) << "Bytes saved on stream " << my_streams[stream_idx]
+        << ": " << bytes_saved_[my_streams[stream_idx]];
     pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
   }
 }

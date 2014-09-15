@@ -104,6 +104,7 @@ int main(int argc, char **argv) {
       << "In-memory buffer for each stream: " << mem_buf_size << " bytes.\n"
       << "Data chunks on disk: " << FLAGS_disk_chunk_size << " bytes.\n"
       << "Number of GC threads: " << FLAGS_gc_thread_count << ".\n"
+      << "Min #events to trigger GC: " << FLAGS_min_events_to_gc << ".\n"
       << "Max GC table size: " << FLAGS_max_gc_table_size << " events.\n"
       << "Max GC chunk size: " << FLAGS_max_gc_chunk_size << " bytes.\n";
 

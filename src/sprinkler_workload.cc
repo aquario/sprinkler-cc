@@ -5,8 +5,10 @@
 #include <stdlib.h>
 
 int64_t SprinklerWorkload::get_next_key() {
+  int64_t result;
   if (RAND_MAX == 32767) {
-    return (rand() << 16) + rand();
+    result = (rand() << 16) + rand();
   }
-  return rand();
+  result = rand();
+  return result % 128;
 }
