@@ -178,12 +178,16 @@ int TransportLayer::send_ready(SocketIter ss) {
   while ((cit = ss->ctrl_cqueue.begin()) != ss->ctrl_cqueue.end()
       && ss->ctrl_offset >= cit->size) {
     ss->ctrl_offset -= cit->size;
+    Chunk &chunk = ss->ctrl_cqueue.front();
+    chunk.cleanup(chunk.env);
     ss->ctrl_cqueue.pop_front();
   }
 
   while ((cit = ss->data_cqueue.begin()) != ss->data_cqueue.end()
       && ss->data_offset >= cit->size) {
     ss->data_offset -= cit->size;
+    Chunk &chunk = ss->data_cqueue.front();
+    chunk.cleanup(chunk.env);
     ss->data_cqueue.pop_front();
   }
 

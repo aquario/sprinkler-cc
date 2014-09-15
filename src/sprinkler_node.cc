@@ -34,7 +34,7 @@ void SprinklerNode::start_proxy(int64_t duration) {
       return;
     }
 
-    tl_.wait(0);
+    tl_.wait(1);
     
     // The tail of a proxy chain sends adv & pub messages periodically.
     if (role_ & kTail) {
@@ -78,7 +78,7 @@ void SprinklerNode::start_client(
       return;
     }
 
-    tl_.wait(0);
+    tl_.wait(1);
     
     // Publish events to proxy.
     if (interval == 0 || now > time_to_pub) {
@@ -340,5 +340,6 @@ void SprinklerNode::handle_client_publish(const uint8_t *data) {
 }
 
 void SprinklerNode::release_chunk(void *chunk) {
+  LOG(INFO) << "Chunk released.";
   dfree(chunk);
 }
