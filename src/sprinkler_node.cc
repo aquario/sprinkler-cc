@@ -248,7 +248,7 @@ void SprinklerNode::handle_subscription(const uint8_t *data) {
   CHECK_LT(sid, nstreams_);
   int64_t next_seq = static_cast<int64_t>(stoi(data + 3, 8));
 
-  VLOG(kLogLevel) << "handle_subscription from proxy " << pid << " on stream "
+  LOG(INFO) << "handle_subscription from proxy " << pid << " on stream "
       << sid << " starting seq# " << next_seq;
 
   if (demands_[sid].count(pid)) {
@@ -269,7 +269,7 @@ void SprinklerNode::handle_unsubscription(const uint8_t *data) {
   CHECK_GE(sid, 0);
   CHECK_LT(sid, nstreams_);
 
-  VLOG(kLogLevel) << "handle_unsubscription from proxy " << pid
+  LOG(INFO) << "handle_unsubscription from proxy " << pid
       << " on stream " << sid;
 
   demands_[sid].erase(pid);

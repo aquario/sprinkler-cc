@@ -497,6 +497,9 @@ void MultiTierStorage::run_gc(int thread_id) {
     membuf.gc_table_begin_offset = gc_table_begin_offset;
     membuf.gc_table_end_offset = gc_table_end_offset;
 
+    VLOG(kLogLevel) << "membuf before GC: [" << membuf.begin_offset << ", "
+        << membuf.end_offset << ")";
+
     int64_t begin_seq = membuf.begin_seq;
     int64_t begin_offset = membuf.begin_offset;
     int64_t end_offset = gc_table_begin_offset;
@@ -670,6 +673,8 @@ void MultiTierStorage::run_gc(int thread_id) {
 
     LOG(INFO) << "Bytes saved on stream " << my_streams[stream_idx]
         << ": " << bytes_saved_[my_streams[stream_idx]];
+    VLOG(kLogLevel) << "membuf after GC: [" << membuf.begin_offset << ", "
+        << membuf.end_offset << ")";
     pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
   }
 }
