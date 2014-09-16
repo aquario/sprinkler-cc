@@ -601,12 +601,13 @@ void TransportLayer::remove_closed_sockets() {
   std::list<SprinklerSocket>::iterator sit = sockets_.begin();
   while (sit != sockets_.end()) {
     if (sit->skt == -1) {
+      VLOG(kLogLevel) << "Remove closed socket with endpiont (" << sit->host
+          << ", " << sit->port << ")";
       // Remove the outgoing socket tracker on address list.
       if (sit->port != 0) {
         std::string endpoint = get_endpoint(sit->host, sit->port);
         if (addr_list_.count(endpoint) == 1) {
           addr_list_[endpoint].out = sockets_.end();
-          break;
         }
       }
 
