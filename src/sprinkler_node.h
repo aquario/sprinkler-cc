@@ -39,6 +39,9 @@ struct SubInfo {
   // Max seq# ever heard on this stream.  If this is a local stream, this number
   // is the most recent seq# added to the stream.
   int64_t max_adv;
+  // The time this max_adv is heard.  The older the timestamp, the less
+  // credible this advertisement is.
+  int64_t timestamp;
 
   // Constructor.
   // src = -1 means no subscription yet; sequence number starts from 1.
@@ -111,7 +114,12 @@ class SprinklerNode {
   // Parse an advertisement message and update subscriptions if necessary.
   void handle_adv_message(const uint8_t *dst);
   // Check if it's necessary to change subscription source.
-  bool should_update(int64_t old_max, int64_t new_max, int64_t timestamp);
+  // Returns true is (new_max - old_max) > kSubThd / timestamp_diff.
+  //
+  // Note that effectively, the difference in sequence numbers is magnified by
+  // timestamp_diff, so that older advertisements matter less.
+  bool should_update(const SubInfo &sub_info, int64_t new_max,
+      int64_t timestamp);
 
   // Send message to subscribe for a stream.
   void send_sub_message(int src, int8_t sid, int64_t next_seq);
@@ -159,7 +167,7 @@ class SprinklerNode {
   };
 
   // Threshold on changing subscription.
-  static constexpr double kSubThd = 0.001;
+  static constexpr double kSubThd = 1000;
   // Time intervals for periodical events in microseconds.
   static const int kAdvPeriod = 2 * 1000000;    // 2 seconds.
   static const int kPubPeriod = 2 * 10000;      // 0.02 seconds.

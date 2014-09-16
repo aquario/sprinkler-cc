@@ -28,13 +28,13 @@ void MultiTierStorage::init_gc() {
   }
 }
 
-void MultiTierStorage::put_raw_events(
+int64_t MultiTierStorage::put_raw_events(
     int sid, int64_t nevents, const uint8_t *data) {
   VLOG(kLogLevel) << "put_raw_events: stream " << sid << "; " << nevents
       << " events.";
   if (nevents == 0) {
     LOG(WARNING) << "put_raw_events invoked with 0 events";
-    return;
+    return mem_store_[sid].end_seq;
   }
   CHECK_NOTNULL(data);
 
@@ -67,15 +67,17 @@ void MultiTierStorage::put_raw_events(
   // Finally, set the new end_offset and empty flag.
   mem_store_[sid].end_offset = end_offset;
   mem_store_[sid].is_empty = false;
+
+  return mem_store_[sid].end_seq;
 }
 
-void MultiTierStorage::put_events(
+int64_t MultiTierStorage::put_events(
     int sid, int64_t nevents, const uint8_t *data) {
   VLOG(kLogLevel) << "put_events: stream " << sid << "; " << nevents
       << " events.";
   if (nevents == 0) {
     LOG(WARNING) << "put_events invoked with 0 events";
-    return;
+    return mem_store_[sid].end_seq;
   }
   CHECK_NOTNULL(data);
 
@@ -88,7 +90,7 @@ void MultiTierStorage::put_events(
     if (fit_offset == -1) {
       LOG(WARNING) << "Got out of range events starting at "
           << get_begin_seq(data);
-      return;
+      return mem_store_[sid].end_seq;
     }
     data += fit_offset;
     nevents -= fit_offset / kEventLen;
@@ -119,14 +121,20 @@ void MultiTierStorage::put_events(
 
   // TODO(haoyan): Change this to LOG_EVERY_N when load gets heavier.
   LOG(INFO) << "PUT " << sid << " " << (mem_store_[sid].end_seq - 1);
+
+  return mem_store_[sid].end_seq;
 }
 
 int64_t MultiTierStorage::get_events(
     int sid, int64_t first_seq, int64_t max_events, uint8_t *buffer) {
-  VLOG(kLogLevel) << "get_events: stream " << sid << "; staring at "
-      << first_seq << "; at most " << max_events << " events are needed.";
+  VLOG(kLogLevel) << "get_events: stream " << sid << "; starting at "
+      << first_seq << "; at most " << max_events << " events are needed;"
+      << " begin_offset is " << mem_store_[sid].begin_offset
+      << " begin_seq is " << mem_store_[sid].begin_seq;
   // first_seq is too large.
   if (first_seq >= mem_store_[sid].end_seq) {
+    LOG(ERROR) << "get_events on stream " << sid << ": asking for " << first_seq
+        << ", end_seq is " << mem_store_[sid].end_seq;
     return kErrFuture;
   }
 
@@ -135,6 +143,9 @@ int64_t MultiTierStorage::get_events(
   if (first_seq < mem_store_[sid].begin_seq) {
     // TODO(haoyan): Fetch events from disk.
     LOG(WARNING) << "Data not found in memory.";
+    LOG(WARNING) << "get_events on stream " << sid << ": asking for "
+        << first_seq << ", begin_seq is " << mem_store_[sid].begin_seq;
+
     pthread_mutex_unlock(&mutex_[sid]);
     return kErrPast;
   } else {
@@ -143,6 +154,8 @@ int64_t MultiTierStorage::get_events(
     int64_t begin_offset = adjust_offset_circular(first_seq,
         mem_store_[sid].begin_offset, mem_store_[sid].end_offset,
         mem_store_[sid].chunk);
+    // If it gets -1, it has to be an error ...
+    CHECK_GT(begin_offset, -1);
     int64_t end_offset = mem_store_[sid].end_offset;
     int64_t nevents = (end_offset > begin_offset
         ? (end_offset - begin_offset) / kEventLen
@@ -154,6 +167,9 @@ int64_t MultiTierStorage::get_events(
         end_offset -= mem_buf_size_;
       }
     }
+
+    VLOG(kLogLevel) << "Copy memory in [" << begin_offset << ", " << end_offset
+        << ") for " << nevents << " events.";
 
     // Next, copy events into buffer.
     if (end_offset > begin_offset) {
@@ -224,17 +240,17 @@ bool MultiTierStorage::is_valid_offset(
 int64_t MultiTierStorage::adjust_offset_linear(
     int64_t seq, int64_t nevents, const uint8_t *chunk) {
   int64_t lo = 0;
-  int64_t hi = (nevents - 1) * kEventLen;
+  int64_t hi = nevents - 1;
   
   while (lo <= hi) {
-    int64_t mid = (lo + hi) >> 1;   // div 2.
+    int64_t mid = ((lo + hi) >> 1) * kEventLen;   // Event offset at midpoint.
     if (in_range(chunk + mid, seq)) {
       return mid;
     }
     if (get_begin_seq(chunk + mid) > seq) {
-      hi = mid - kEventLen;
+      hi = mid / kEventLen - 1;
     } else if (get_end_seq(chunk + mid) <= seq) {
-      lo = mid + kEventLen;
+      lo = mid / kEventLen + 1;
     }
   }
   return -1;
@@ -252,12 +268,12 @@ int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
     return result;
   }
 
-  int64_t lo = begin;
-  int64_t hi = end + mem_buf_size_;
+  int64_t lo = begin / kEventLen;
+  int64_t hi = (end + mem_buf_size_) / kEventLen;
 
   while (lo <= hi) {
-    int64_t mid = (lo + hi) >> 1;   // div 2.
-    int64_t idx = mid;
+    int64_t mid = (lo + hi) >> 1;   // Event at midpoint.
+    int64_t idx = mid * kEventLen;
     if (idx >= mem_buf_size_) {
       idx -= mem_buf_size_;
     }
@@ -266,9 +282,9 @@ int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
       return idx;
     }
     if (get_begin_seq(chunk + idx) > seq) {
-      hi = mid - kEventLen;
+      hi = mid - 1;
     } else if (get_end_seq(chunk + idx) <= seq) {
-      lo = mid + kEventLen;
+      lo = mid + 1;
     }
   }
   return -1;
@@ -367,7 +383,6 @@ void MultiTierStorage::run_gc(int thread_id) {
       CHECK_EQ(*(ptr + end_offset), 0);
       int64_t key = get_object_id(ptr + end_offset);
       gc_info.table.insert(key);
-//      VLOG(kLogLevel) << "Insert key " << key << " into GC table";
     }
     VLOG(kLogLevel) << "Constructed GC table in [" << end_offset << ", "
         << membuf.end_offset << ") with " << gc_info.table.size()
@@ -417,9 +432,6 @@ void MultiTierStorage::run_gc(int thread_id) {
       int64_t lo = 0;
       while (cursor != begin_offset) {
         cursor = prev_offset(cursor);
-//        VLOG(kLogLevel) << "Event# -- cursor: " << cursor / kEventLen
-//            << "; processed: " << processed / kEventLen
-//            << "; lo: " << lo << "; current_gc: " << current_gc;
         if (is_data_event(ptr + cursor)) {
           // For data events, move them rightwards if necessary.
           processed = prev_offset(processed);

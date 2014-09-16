@@ -51,11 +51,13 @@ class MultiTierStorage {
 
   // Add a block of raw events from a client.
   // "data" here contains only messages, no header is included.
-  void put_raw_events(int sid, int64_t nevents, const uint8_t *data);
+  // Returns the smallest seq# that has not been assigned yet.
+  int64_t put_raw_events(int sid, int64_t nevents, const uint8_t *data);
 
   // Add a block of formatted events from a peer proxy.
   // "data" here contains only messages, no header is included.
-  void put_events(int sid, int64_t nevents, const uint8_t *data);
+  // Returns the smallest seq# that has not been received yet.
+  int64_t put_events(int sid, int64_t nevents, const uint8_t *data);
 
   // Retrieve events from a stream.
   // Return #events fetched into buffer; or a negative value indicating a type

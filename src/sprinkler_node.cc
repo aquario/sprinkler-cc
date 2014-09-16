@@ -142,12 +142,6 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
 }
 
 void SprinklerNode::send_adv_message() {
-  std::string logmsg = "send_adv_message:";
-  // TODO(haoyan): For debugging only.
-  for (int i = 0; i < nstreams_; ++i) {
-    logmsg += " " + std::to_string(sub_info_[i].next_seq - 1);
-  }
-  VLOG(kLogLevel) << logmsg;
   for (int i = 0; i < nproxies_; ++i) {
     if (proxies_[i].id == id_) {
       continue;
@@ -173,36 +167,49 @@ void SprinklerNode::send_adv_message() {
 void SprinklerNode::handle_adv_message(const uint8_t *dst) {
   CHECK_EQ(*dst, kAdvMsg);
 
-  std::string logmsg = "handle_adv_message:";
-  // TODO(haoyan): For debugging only.
-  for (int i = 0; i < nstreams_; ++i) {
-    logmsg += " " + std::to_string(static_cast<int64_t>(stoi(dst + 2 + (i * 8), 8)));
-  }
-  VLOG(kLogLevel) << logmsg;
-
+  int64_t timestamp = tl_.uptime();
   int new_src = static_cast<int>(*(dst + 1));
   for (int i = 0; i < nstreams_; ++i) {
+    // A proxy never need to subscribe to others for a local stream.
+    if (local_streams_.count(i) == 1) {
+      continue;
+    }
     int64_t new_max_adv = static_cast<int64_t>(stoi(dst + 2 + (i * 8), 8));
-    // TODO(haoyan): update with a real timestamp.
-    if (should_update(sub_info_[i].max_adv, new_max_adv, 0)) {
+    // Check if a change of subscription is necessary.
+    if (new_src != sub_info_[i].src && new_max_adv > 0 &&
+        should_update(sub_info_[i], new_max_adv, timestamp)) {
       // Update the subscription to new source.
       if (role_ & kTail) {
-        send_unsub_message(sub_info_[i].src, i);
+        if (sub_info_[i].src != -1) {
+          send_unsub_message(sub_info_[i].src, i);
+        }
         send_sub_message(new_src, i, sub_info_[i].next_seq);
       }
-      sub_info_[i].max_adv = new_max_adv;
       sub_info_[i].src = new_src;
+      sub_info_[i].max_adv = new_max_adv;
+      sub_info_[i].timestamp = timestamp;
     }
   }
 }
 
-inline bool SprinklerNode::should_update(int64_t old_max, int64_t new_max,
-    int64_t timestamp) {
-  int64_t time_diff = tl_.uptime() - timestamp;
-  return (new_max - old_max) / static_cast<double>(time_diff) > kSubThd;
+inline bool SprinklerNode::should_update(
+    const SubInfo &sub_info, int64_t new_max, int64_t timestamp) {
+  // If there's no previous subscription, establish one.
+  if (sub_info.src == -1) {
+    return true;
+  }
+
+  int64_t time_diff = (timestamp - sub_info.timestamp) / 1000000;
+  if (time_diff == 0) {
+    return false;
+  }
+
+  return new_max - sub_info.max_adv >
+      kSubThd / static_cast<double>(time_diff);
 }
 
 void SprinklerNode::send_sub_message(int src, int8_t sid, int64_t next_seq) {
+  LOG(INFO) << "SUB " << src << " " << sid << " " << next_seq;
   uint8_t *msg = static_cast<uint8_t *>(dcalloc(11, 1)); 
   *msg = static_cast<uint8_t>(kSubMsg);
   *(msg + 1) = static_cast<uint8_t>(id_);
@@ -217,8 +224,8 @@ void SprinklerNode::send_sub_message(int src, int8_t sid, int64_t next_seq) {
 }
 
 void SprinklerNode::send_unsub_message(int src, int8_t sid) {
+  LOG(INFO) << "UNSUB " << src << " " << sid;
   uint8_t *msg = static_cast<uint8_t *>(dcalloc(3, 1)); 
-
   *msg = static_cast<uint8_t>(kSubMsg);
   *(msg + 1) = static_cast<uint8_t>(id_);
   *(msg + 2) = static_cast<uint8_t>(sid);
@@ -241,7 +248,7 @@ void SprinklerNode::handle_subscription(const uint8_t *data) {
       << sid << " starting seq# " << next_seq;
 
   if (demands_[sid].count(pid)) {
-  // If the subscription already exists, update with next_seq if it is larger.
+    // If the subscription already exists, update with next_seq if it is larger.
     // Note that whether it makes sense to lower next_seq depends on failure
     // model we assume.
     if (next_seq > demands_[sid][pid]) {
@@ -272,6 +279,15 @@ void SprinklerNode::proxy_publish() {
     for (auto &request : demand.second) {
       int pid = request.first;
       int64_t next_seq = request.second;
+      CHECK_LE(next_seq, sub_info_[sid].next_seq);
+
+      // Already reached as far as what we have, nothing to send.
+      if (next_seq == sub_info_[sid].next_seq) {
+        continue;
+      }
+
+      VLOG(kLogLevel) << "Fetch event (" << sid << ", " << next_seq
+          << ") for proxy " << pid;
 
       uint8_t *msg =
         static_cast<uint8_t *>(dcalloc(TransportLayer::kMaxChunkSize, 1));
@@ -279,20 +295,21 @@ void SprinklerNode::proxy_publish() {
       *(msg + 1) = static_cast<uint8_t>(id_); 
       *(msg + 2) = static_cast<uint8_t>(sid);
 
-      int64_t nevents = storage_.get_events(sid, next_seq, kMaxEventsPerMsg,
-          msg + 11);
-      // Compute the new next_seq.
-      next_seq = get_end_seq(msg + 11 + (nevents - 1) * kEventLen);
+      int64_t nevents =
+          storage_.get_events(sid, next_seq, kMaxEventsPerMsg, msg + 11);
       if (nevents < 0) {
         LOG(WARNING) << "Failed to get events: error code " << nevents;
       } else {
+        // Encode #events.
+        itos(msg + 3, nevents, 8);
         int64_t size = 11 + nevents * kEventLen;
         // If send is successful, update next_seq accordingly.
         if (tl_.async_send_message(proxies_[pid].host, proxies_[pid].port,
               msg, size, true, release_chunk, msg)) {
+          // Update next_seq.
+          next_seq = get_end_seq(msg + 11 + (nevents - 1) * kEventLen);
           request.second = next_seq;
         }
-        // TODO(haoyan): Should we do something if it keeps failing?
       }
     }
   }
@@ -303,11 +320,25 @@ void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
   int sid = static_cast<int>(*(data + 2));
   CHECK_LT(sid, nstreams_);
   int64_t nevents = static_cast<int64_t>(stoi(data + 3, 8));
+  if (nevents == 0) {
+    LOG(ERROR) << "handle_proxy_publish: nevents == 0.";
+  } else if (get_begin_seq(data + 11) > sub_info_[sid].next_seq) {
+    // These events are out of order.
+    // Resend a subscription message with lower next_seq.
+    LOG(WARNING) << "handle_proxy_publish: got out-of-order events."
+        << "  Re-subscribe with current next_seq.";
+    send_sub_message(pid, sid, sub_info_[pid].next_seq);
+  } else if (get_end_seq(data + 11 + (nevents - 1) * kEventLen)
+      <= sub_info_[pid].next_seq) {
+    // We have already received all of these.
+    LOG(WARNING) << "handle_proxy_publish: all these events are too old.";
+  } else {
+    VLOG(kLogLevel) << "handle_proxy_publish from proxy " << pid
+        << " on stream " << sid << " with " << nevents << " events";
 
-  VLOG(kLogLevel) << "handle_proxy_publish from proxy " << pid
-      << " on stream " << sid << " with " << nevents << " events";
-
-  storage_.put_events(sid, nevents, data + 11);
+    int64_t next_seq = storage_.put_events(sid, nevents, data + 11);
+    sub_info_[sid].next_seq = next_seq;
+  }
 }
 
 void SprinklerNode::client_publish(int batch_size) {
@@ -324,13 +355,6 @@ void SprinklerNode::client_publish(int batch_size) {
     itos(msg + 12 + i * kRawEventLen, SprinklerWorkload::get_next_key(), 8);
   }
 
-  // For debug only
-  std::string message = "";
-  for (int i = 0; i < 28; ++i) {
-    message += std::to_string(*(msg + i)) + " ";
-  }
-  VLOG(kLogLevel) << message;
-  
   if (!tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,
         false, release_chunk, msg)) {
     LOG(ERROR) << "send_adv_message: cannot talk to proxy " << proxies_[0].id
@@ -347,10 +371,8 @@ void SprinklerNode::handle_client_publish(const uint8_t *data) {
   VLOG(kLogLevel) << "handle_client_publish from client " << cid
       << " on stream " << sid << " with " << nevents << " events";
 
-  storage_.put_raw_events(sid, nevents, data + 12);
-
-  // Update next_seq for future advertisement messages.
-  sub_info_[sid].next_seq += nevents;
+  // Store events and update next_seq for future advertisement messages.
+  sub_info_[sid].next_seq = storage_.put_raw_events(sid, nevents, data + 12);
 }
 
 void SprinklerNode::release_chunk(void *chunk) {
