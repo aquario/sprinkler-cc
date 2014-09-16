@@ -106,13 +106,10 @@ class SprinklerNode {
   // Upcall on receiving a message.
   void deliver(const uint8_t *, int, std::function<void(void *)>, void *);
   
-  // Broadcast advertisement messages to all peer proxies.
+  // Construct advertisement message and broadcast it to all peer proxies.
   void send_adv_message();
-  // Construct an advertisement message.  Assumes that dst points to an
-  // allocated space.
-  void encode_adv(uint8_t *dst);
   // Parse an advertisement message and update subscriptions if necessary.
-  void decode_adv(const uint8_t *dst);
+  void handle_adv_message(const uint8_t *dst);
   // Check if it's necessary to change subscription source.
   bool should_update(int64_t old_max, int64_t new_max, int64_t timestamp);
 

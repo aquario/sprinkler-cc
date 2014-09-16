@@ -112,7 +112,7 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
       break;
     case kAdvMsg:
       CHECK(role_);   // Has something, i.e., not a client.
-      decode_adv(data);
+      handle_adv_message(data);
       forward_or_release(data, size, true, release, env);
       break;
     case kSubMsg:
@@ -142,6 +142,12 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
 }
 
 void SprinklerNode::send_adv_message() {
+  std::string logmsg = "send_adv_message:";
+  // TODO(haoyan): For debugging only.
+  for (int i = 0; i < nstreams_; ++i) {
+    logmsg += " " + std::to_string(sub_info_[i].next_seq - 1);
+  }
+  VLOG(kLogLevel) << logmsg;
   for (int i = 0; i < nproxies_; ++i) {
     if (proxies_[i].id == id_) {
       continue;
@@ -164,16 +170,15 @@ void SprinklerNode::send_adv_message() {
   }
 }
 
-void SprinklerNode::encode_adv(uint8_t *dst) {
-  *dst = static_cast<uint8_t>(kAdvMsg);
-  *(dst + 1) = static_cast<uint8_t>(id_);
-  for (int i = 0; i < nstreams_; ++i) {
-    itos(dst + 2 + (i * 8), static_cast<uint64_t>(sub_info_[i].max_adv), 8);
-  }
-}
-
-void SprinklerNode::decode_adv(const uint8_t *dst) {
+void SprinklerNode::handle_adv_message(const uint8_t *dst) {
   CHECK_EQ(*dst, kAdvMsg);
+
+  std::string logmsg = "handle_adv_message:";
+  // TODO(haoyan): For debugging only.
+  for (int i = 0; i < nstreams_; ++i) {
+    logmsg += " " + std::to_string(static_cast<int64_t>(stoi(dst + 2 + (i * 8), 8)));
+  }
+  VLOG(kLogLevel) << logmsg;
 
   int new_src = static_cast<int>(*(dst + 1));
   for (int i = 0; i < nstreams_; ++i) {
@@ -343,6 +348,9 @@ void SprinklerNode::handle_client_publish(const uint8_t *data) {
       << " on stream " << sid << " with " << nevents << " events";
 
   storage_.put_raw_events(sid, nevents, data + 12);
+
+  // Update next_seq for future advertisement messages.
+  sub_info_[sid].next_seq += nevents;
 }
 
 void SprinklerNode::release_chunk(void *chunk) {
