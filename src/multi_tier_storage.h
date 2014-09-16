@@ -57,7 +57,7 @@ class MultiTierStorage {
   // Add a block of formatted events from a peer proxy.
   // "data" here contains only messages, no header is included.
   // Returns the smallest seq# that has not been received yet.
-  int64_t put_events(int sid, int64_t nevents, const uint8_t *data);
+  int64_t put_events(int sid, int64_t nevents, uint8_t *data);
 
   // Retrieve events from a stream.
   // Return #events fetched into buffer; or a negative value indicating a type

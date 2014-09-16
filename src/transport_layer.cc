@@ -493,6 +493,8 @@ bool TransportLayer::async_send_message(const std::string &host, int port,
   async_socket_send(ss, hdr, 4, is_ctrl, release_chunk, hdr);
   async_socket_send(ss, bytes, len - 4, is_ctrl, cleanup, env);
 
+  VLOG(kLogLevel) << "Chunk queue backlog: "
+      << ss->ctrl_cqueue.size() + ss->data_cqueue.size();
   return true;
 }
 

@@ -170,7 +170,7 @@ class SprinklerNode {
   static constexpr double kSubThd = 1000;
   // Time intervals for periodical events in microseconds.
   static const int kAdvPeriod = 2 * 1000000;    // 2 seconds.
-  static const int kPubPeriod = 2 * 10000;      // 0.02 seconds.
+  static const int kPubPeriod = 2 * 1000;      // 2 milliseconds.
   // Max header length for any Sprinkler message.
   static const int kMaxHeaderSize = 32;
   // Max #events per message.

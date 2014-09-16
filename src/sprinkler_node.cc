@@ -91,6 +91,7 @@ void SprinklerNode::forward_or_release(const uint8_t *data, int size,
     // Forward the message to the next node in the chain.
     if (!tl_.async_send_message(proxies_[0].host, proxies_[0].port,
           data, size, is_ctrl, release, env)) {
+      release(env);
       LOG(ERROR) << "Cannot talk to the successor node. Is it failing?";
     }
   }
@@ -158,6 +159,7 @@ void SprinklerNode::send_adv_message() {
 
     if (!tl_.async_send_message(proxies_[i].host, proxies_[i].port,
           msg, msg_len, true, release_chunk, msg)) {
+      release_chunk(msg);
       LOG(ERROR) << "send_adv_message: cannot talk to proxy " << proxies_[i].id
           << ". Is it failing?";
     }
@@ -218,6 +220,7 @@ void SprinklerNode::send_sub_message(int src, int8_t sid, int64_t next_seq) {
 
   if (!tl_.async_send_message(proxies_[src].host, proxies_[src].port,
         msg, 11, true, release_chunk, msg)) {
+    release_chunk(msg);
     LOG(ERROR) << "send_sub_message: cannot talk to proxy " << proxies_[src].id
         << ". Is it failing?";
   }
@@ -232,6 +235,7 @@ void SprinklerNode::send_unsub_message(int src, int8_t sid) {
 
   if (!tl_.async_send_message(proxies_[src].host, proxies_[src].port,
         msg, 3, true, release_chunk, msg)) {
+    release_chunk(msg);
     LOG(ERROR) << "send_unsub_message: cannot talk to proxy "
         << proxies_[src].id << ". Is it failing?";
   }
@@ -336,7 +340,8 @@ void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
     VLOG(kLogLevel) << "handle_proxy_publish from proxy " << pid
         << " on stream " << sid << " with " << nevents << " events";
 
-    int64_t next_seq = storage_.put_events(sid, nevents, data + 11);
+    int64_t next_seq =
+        storage_.put_events(sid, nevents, const_cast<uint8_t *>(data + 11));
     sub_info_[sid].next_seq = next_seq;
   }
 }
@@ -357,6 +362,7 @@ void SprinklerNode::client_publish(int batch_size) {
 
   if (!tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,
         false, release_chunk, msg)) {
+    release_chunk(msg);
     LOG(ERROR) << "send_adv_message: cannot talk to proxy " << proxies_[0].id
         << ". Is it failing?";
   }
