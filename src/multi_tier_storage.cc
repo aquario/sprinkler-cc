@@ -32,21 +32,22 @@ int64_t MultiTierStorage::put_raw_events(
     int sid, int64_t nevents, const uint8_t *data) {
   VLOG(kLogLevel) << "put_raw_events: stream " << sid << "; " << nevents
       << " events.";
+  MemBuffer &membuf = mem_store_[sid];
   if (nevents == 0) {
     LOG(WARNING) << "put_raw_events invoked with 0 events";
-    return mem_store_[sid].end_seq;
+    return membuf.end_seq;
   }
   CHECK_NOTNULL(data);
 
   // Not enough space, flush something to disk.
-  if (get_free_space(mem_store_[sid]) < nevents * kEventLen) {
+  if (get_free_space(membuf) < nevents * kEventLen) {
     flush_to_disk(sid);
   }
 
-  uint8_t *ptr = mem_store_[sid].chunk;
+  uint8_t *ptr = membuf.chunk;
 
   // First, reset the memory region.
-  int64_t end_offset = mem_store_[sid].end_offset;
+  int64_t end_offset = membuf.end_offset;
   if (end_offset + nevents * kEventLen <= mem_buf_size_) {
     memset(ptr + end_offset, 0, nevents * kEventLen);
   } else {
@@ -56,34 +57,35 @@ int64_t MultiTierStorage::put_raw_events(
 
   // Next, format events with seq#'s.
   for (int i = 0; i < nevents; ++i) {
-    itos(ptr + end_offset + 1, mem_store_[sid].end_seq, 8);
+    itos(ptr + end_offset + 1, membuf.end_seq, 8);
     memmove(ptr + end_offset + 9, data + i * kRawEventLen, kRawEventLen);
     end_offset = next_offset(end_offset);
-    ++mem_store_[sid].end_seq;
+    ++membuf.end_seq;
   }
   // TODO(haoyan): Change this to LOG_EVERY_N when load gets heavier.
-  LOG(INFO) << "PUT " << sid << " " << (mem_store_[sid].end_seq - 1);
+  LOG(INFO) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
   // Finally, set the new end_offset and empty flag.
-  mem_store_[sid].end_offset = end_offset;
-  mem_store_[sid].is_empty = false;
+  membuf.end_offset = end_offset;
+  membuf.is_empty = false;
 
-  return mem_store_[sid].end_seq;
+  return membuf.end_seq;
 }
 
 int64_t MultiTierStorage::put_events(
     int sid, int64_t nevents, uint8_t *data) {
   VLOG(kLogLevel) << "put_events: stream " << sid << "; " << nevents
       << " events.";
+  MemBuffer &membuf = mem_store_[sid];
   if (nevents == 0) {
     LOG(WARNING) << "put_events invoked with 0 events";
-    return mem_store_[sid].end_seq;
+    return membuf.end_seq;
   }
   CHECK_NOTNULL(data);
 
-  int64_t end_seq = mem_store_[sid].end_seq;
-  int64_t end_offset = mem_store_[sid].end_offset;
-  uint8_t *ptr = mem_store_[sid].chunk;
+  int64_t end_seq = membuf.end_seq;
+  int64_t end_offset = membuf.end_offset;
+  uint8_t *ptr = membuf.chunk;
 
   // Find offset to the first event that is needed.
   if (!in_range(data, end_seq)) {
@@ -102,39 +104,59 @@ int64_t MultiTierStorage::put_events(
   if (is_tombstone(data)) {
     pthread_mutex_lock(&mutex_[sid]);
     int64_t new_begin = get_begin_seq(data);
-    if (mem_store_[sid].begin_seq >= new_begin) {
-      bytes_saved_[sid] += get_used_space(mem_store_[sid]);
-
-      mem_store_[sid].begin_offset = end_offset;
-      mem_store_[sid].begin_seq = new_begin;
-      mem_store_[sid].is_empty = true;
+    if (membuf.begin_seq >= new_begin) {
+      // Invalidate any on-going GC avtivity.
+      membuf.gc_begin_offset = -1;
+      membuf.gc_table_begin_offset = -1;
+      // The first new event covers the all the content currently in the buffer.
+      bytes_saved_[sid] += get_used_space(membuf);
+      // Clear up the entire buffer.
+      membuf.begin_offset = end_offset;
+      membuf.begin_seq = new_begin;
+      membuf.is_empty = true;
     } else if (new_begin == end_seq) {
-      if (!mem_store_[sid].is_empty &&
+      // If the last previous event is also a tombstone, merge with *this.
+      if (!membuf.is_empty &&
           is_tombstone(ptr + prev_offset(end_offset))) {
+        // Invalidate on-going GC activity if this interferes with GC table.
+        if (membuf.gc_table_end_offset == end_offset) {
+          membuf.gc_begin_offset = -1;
+          membuf.gc_table_begin_offset = -1;
+        }
+        // Move pointers backwards for one event.
         bytes_saved_[sid] += kEventLen;
-        mem_store_[sid].end_offset = end_offset = prev_offset(end_offset);
-        mem_store_[sid].end_seq = end_seq = get_begin_seq(ptr + end_offset);
-        itos(data + 1, end_seq, 8);
+        membuf.end_offset = end_offset = prev_offset(end_offset);
+        membuf.end_seq = end_seq = get_begin_seq(ptr + end_offset);
+        memmove(data + 1, ptr + end_offset + 1, 8);
       }
     } else {
+      // data contains end_seq, and it's not the begin, so there are some events
+      // to merge.
       int64_t fit_offset = adjust_offset_circular(new_begin,
-          mem_store_[sid].begin_offset, end_offset, ptr);
+          membuf.begin_offset, end_offset, ptr);
       CHECK_GT(fit_offset, -1);
+      // Invalidate on-going GC activity if there is interference.
+      if (membuf.gc_table_begin_offset != -1 &&
+          (in_between(fit_offset, end_offset, membuf.gc_table_begin_offset) ||
+           in_between(fit_offset, end_offset, membuf.gc_table_end_offset))) {
+        membuf.gc_begin_offset = -1;
+        membuf.gc_table_begin_offset = -1;
+      }
+      // Update begin seq for the first new event.
       if (is_tombstone(ptr + fit_offset)) {
-        // Update begin seq for the first new event.
         memmove(data + 1, ptr + fit_offset + 1, 8);
       }
 
       bytes_saved_[sid] += distance(fit_offset, end_offset);
 
-      mem_store_[sid].end_offset = end_offset = fit_offset;
-      mem_store_[sid].end_seq = end_seq = get_begin_seq(data);
+      membuf.end_offset = end_offset = fit_offset;
+      membuf.end_seq = end_seq = get_begin_seq(data);
     }
     pthread_mutex_unlock(&mutex_[sid]);
   }
 
   // Not enough space, flush something to disk.
-  if (get_free_space(mem_store_[sid]) < nevents * kEventLen) {
+  if (get_free_space(membuf) < nevents * kEventLen) {
     flush_to_disk(sid);
   }
 
@@ -149,39 +171,40 @@ int64_t MultiTierStorage::put_events(
 
   // Set new offset, seq#, and empty flag.
   end_offset += nevents * kEventLen;
-  mem_store_[sid].end_offset = (end_offset < mem_buf_size_
+  membuf.end_offset = (end_offset < mem_buf_size_
       ? end_offset
       : end_offset - mem_buf_size_);
-  mem_store_[sid].end_seq = get_end_seq(data + (nevents - 1) * kEventLen);
-  mem_store_[sid].is_empty = false;
+  membuf.end_seq = get_end_seq(data + (nevents - 1) * kEventLen);
+  membuf.is_empty = false;
 
   // TODO(haoyan): Change this to LOG_EVERY_N when load gets heavier.
-  LOG(INFO) << "PUT " << sid << " " << (mem_store_[sid].end_seq - 1);
+  LOG(INFO) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
-  return mem_store_[sid].end_seq;
+  return membuf.end_seq;
 }
 
 int64_t MultiTierStorage::get_events(
     int sid, int64_t first_seq, int64_t max_events, uint8_t *buffer) {
   pthread_mutex_lock(&mutex_[sid]);
 
+  MemBuffer &membuf = mem_store_[sid];
   VLOG(kLogLevel) << "get_events: stream " << sid << "; starting at "
       << first_seq << "; at most " << max_events << " events are needed;"
-      << " begin_offset is " << mem_store_[sid].begin_offset
-      << " begin_seq is " << mem_store_[sid].begin_seq;
+      << " begin_offset is " << membuf.begin_offset
+      << " begin_seq is " << membuf.begin_seq;
   // first_seq is too large.
-  if (first_seq >= mem_store_[sid].end_seq) {
+  if (first_seq >= membuf.end_seq) {
     LOG(ERROR) << "get_events on stream " << sid << ": asking for " << first_seq
-        << ", end_seq is " << mem_store_[sid].end_seq;
+        << ", end_seq is " << membuf.end_seq;
     return kErrFuture;
   }
 
   // first_seq is not in memory.
-  if (first_seq < mem_store_[sid].begin_seq) {
+  if (first_seq < membuf.begin_seq) {
     // TODO(haoyan): Fetch events from disk.
     LOG(WARNING) << "Data not found in memory.";
     LOG(WARNING) << "get_events on stream " << sid << ": asking for "
-        << first_seq << ", begin_seq is " << mem_store_[sid].begin_seq;
+        << first_seq << ", begin_seq is " << membuf.begin_seq;
 
     pthread_mutex_unlock(&mutex_[sid]);
     return kErrPast;
@@ -189,11 +212,11 @@ int64_t MultiTierStorage::get_events(
     // Everything wanted is in-memory.
     // First, determine the memory range needs to copy.
     int64_t begin_offset = adjust_offset_circular(first_seq,
-        mem_store_[sid].begin_offset, mem_store_[sid].end_offset,
-        mem_store_[sid].chunk);
+        membuf.begin_offset, membuf.end_offset,
+        membuf.chunk);
     // If it gets -1, it has to be an error ...
     CHECK_GT(begin_offset, -1);
-    int64_t end_offset = mem_store_[sid].end_offset;
+    int64_t end_offset = membuf.end_offset;
     int64_t nevents = (end_offset > begin_offset
         ? (end_offset - begin_offset) / kEventLen
         : (mem_buf_size_ - (begin_offset - end_offset)) / kEventLen);
@@ -210,13 +233,13 @@ int64_t MultiTierStorage::get_events(
 
     // Next, copy events into buffer.
     if (end_offset > begin_offset) {
-      memmove(buffer, mem_store_[sid].chunk + begin_offset,
+      memmove(buffer, membuf.chunk + begin_offset,
           end_offset - begin_offset);
     } else {
-      memmove(buffer, mem_store_[sid].chunk + begin_offset,
+      memmove(buffer, membuf.chunk + begin_offset,
           mem_buf_size_ - begin_offset);
       memmove(buffer + (mem_buf_size_ - begin_offset),
-          mem_store_[sid].chunk, end_offset);
+          membuf.chunk, end_offset);
     }
     pthread_mutex_unlock(&mutex_[sid]);
 
@@ -271,6 +294,16 @@ bool MultiTierStorage::is_valid_offset(
   } else {
     // Assumes that offset is always within [0, mem_buf_size_).
     return offset >= membuf.begin_offset || offset < membuf.end_offset;
+  }
+}
+
+bool MultiTierStorage::in_between(int64_t left, int64_t right, int64_t offset) {
+  if (left == right) {
+    return false;
+  } else if (left < right) {
+    return left <= offset && offset < right;
+  } else {
+    return left <= offset || offset < right;
   }
 }
 
@@ -330,14 +363,19 @@ int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
 void MultiTierStorage::flush_to_disk(int sid) {
   pthread_mutex_lock(&mutex_[sid]);
 
-  int64_t begin_offset = mem_store_[sid].begin_offset;
-  uint8_t *ptr = mem_store_[sid].chunk;
+  MemBuffer &membuf = mem_store_[sid];
+  int64_t begin_offset = membuf.begin_offset;
+  int64_t end_offset = begin_offset + disk_chunk_size_;
+  if (end_offset >= mem_buf_size_) {
+    end_offset -= mem_buf_size_;
+  }
+  uint8_t *ptr = membuf.chunk;
   int unit_size = sizeof(uint8_t);
 
   std::string filename = get_chunk_name(sid, next_chunk_no_[sid]);
   FILE *fout = fopen(filename.c_str(), "wb");
 
-  if (begin_offset + disk_chunk_size_ <= mem_buf_size_) {
+  if (begin_offset < end_offset) {
     // No carry-over, a single write is sufficient.
     fwrite(ptr + begin_offset, unit_size, disk_chunk_size_, fout);
   } else {
@@ -350,12 +388,21 @@ void MultiTierStorage::flush_to_disk(int sid) {
   if (begin_offset >= mem_buf_size_) {
     begin_offset -= mem_buf_size_;
   }
-  mem_store_[sid].begin_seq = get_begin_seq(ptr + begin_offset);
-  mem_store_[sid].begin_offset = begin_offset;
+  membuf.begin_seq = get_begin_seq(ptr + begin_offset);
+  membuf.begin_offset = begin_offset;
 
   fclose(fout);
   used_chunk_no_[sid].push_back(next_chunk_no_[sid]);
   ++next_chunk_no_[sid];
+
+  // Invalidate on-going GC activity if there is interference.
+  if (in_between(begin_offset, end_offset, membuf.gc_begin_offset)) {
+    membuf.gc_begin_offset = -1;
+  }
+  if (in_between(begin_offset, end_offset,
+        membuf.gc_table_begin_offset)) {
+    membuf.gc_table_begin_offset = -1;
+  }
 
   pthread_mutex_unlock(&mutex_[sid]);
 }
@@ -444,6 +491,11 @@ void MultiTierStorage::run_gc(int thread_id) {
     VLOG(kLogLevel) << "Constructed GC table in [" << gc_table_begin_offset
         << ", " << gc_table_end_offset << ") with " << gc_info.table.size()
         << " distinct events";
+
+    // Set up flags in MemBuffer marking an on-going GC activity.
+    membuf.gc_begin_offset = membuf.begin_offset;
+    membuf.gc_table_begin_offset = gc_table_begin_offset;
+    membuf.gc_table_end_offset = gc_table_end_offset;
 
     int64_t begin_seq = membuf.begin_seq;
     int64_t begin_offset = membuf.begin_offset;
@@ -590,6 +642,9 @@ void MultiTierStorage::run_gc(int thread_id) {
       begin_offset = pause_offset;
       begin_seq = get_begin_seq(ptr + pause_offset);
 
+      // Update the flag.
+      membuf.gc_begin_offset = begin_offset;
+
       // Release the lock so that other threads get a chance to enter.
       pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
       int rc = pthread_yield();
@@ -600,17 +655,16 @@ void MultiTierStorage::run_gc(int thread_id) {
 
       // Re-aquire the lock before proceeding to another area.
       pthread_mutex_lock(&mutex_[my_streams[stream_idx]]);
-
-      // If any part of the GC table becomes invalid, terminate this GC pass.
-      if (!is_valid_offset(membuf, gc_table_begin_offset) ||
-          !is_valid_offset(membuf, gc_table_end_offset)) {
+      
+      // If the GC table area is corrupted, abort this GC pass.
+      if (membuf.gc_table_begin_offset == -1) {
         break;
       }
-      // Check if our new begin position is still valid.  If not, update it to
-      // the new begin position.
-      if (!is_valid_offset(membuf, begin_offset)) {
-        begin_offset = membuf.begin_offset;
-        begin_seq = membuf.begin_seq;
+
+      // If the begin offset of GC is corrupted, update to current begin_offset.
+      if (membuf.gc_begin_offset == -1) {
+        begin_offset = membuf.gc_begin_offset = membuf.begin_offset;
+        begin_seq = get_begin_seq(ptr + begin_offset);
       }
     }
 

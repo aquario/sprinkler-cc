@@ -77,12 +77,16 @@ class MultiTierStorage {
   struct MemBuffer {
     int64_t begin_seq, end_seq;
     int64_t begin_offset, end_offset;
+    int64_t gc_begin_offset;
+    int64_t gc_table_begin_offset, gc_table_end_offset;
     bool is_empty;
     uint8_t *chunk;
 
     MemBuffer() {
       begin_seq = end_seq = 1;
       begin_offset = end_offset = 0;
+      gc_begin_offset = -1;
+      gc_table_begin_offset = gc_table_end_offset = -1;
       is_empty = true;
       chunk = static_cast<uint8_t *>(dcalloc(mem_buf_size_, 1));
       CHECK_NOTNULL(chunk);
@@ -127,6 +131,9 @@ class MultiTierStorage {
   // Returns if an offset falls into the region of valid events,
   // i.e. [begin_offset, end_offset), modulo mem_buf_size_.
   bool is_valid_offset(const MemBuffer &membuf, int64_t offset);
+
+  // Returns if an offset falls in region [left, right) in a circular buffer.
+  bool in_between(int64_t left, int64_t right, int64_t offset);
 
   // Returns the offset in an array of events such that seq fits into the
   // event at that offset, or -1 in case no event fits.
