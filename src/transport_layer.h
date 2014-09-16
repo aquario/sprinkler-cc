@@ -120,9 +120,12 @@ class TransportLayer {
   void register_peer(const std::string &host, int port);
 
   // Send data to the given socket endpoint identified by (host, port).
-  // Return if the send is successful.
-  bool async_send_message(const std::string &host, int port,
-      const uint8_t *bytes, int len, bool is_ctrl,
+  // Returns:
+  //  0 - if the send is successful;
+  //  -1 - if connection to the remote host cannot be established;
+  //  -2 - if the outgoing buffer is too congested to take new data.
+  int async_send_message(const std::string &host, int port,
+      const uint8_t *bytes, int len, bool is_ctrl, bool can_decline,
       std::function<void(void *)> cleanup, void *env);
 
   // Wait for things to be ready.  Timeout is in milliseconds.  If negative,
@@ -131,6 +134,10 @@ class TransportLayer {
 
   // Maximum chunk size for a single message
   static const int kMaxChunkSize = 32768;
+
+  // Maximum data backlog size allowed on any outgoing socket buffer, in bytes.
+  // Control messages are exempted.
+  static const int kMaxDataBacklog = 10485760;  // 10 MB.
 
   // Log level for this class.
   static const int kLogLevel = 10;

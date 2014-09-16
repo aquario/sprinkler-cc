@@ -465,8 +465,8 @@ void TransportLayer::try_connect_all() {
   }
 }
 
-bool TransportLayer::async_send_message(const std::string &host, int port,
-    const uint8_t *bytes, int len, bool is_ctrl,
+int TransportLayer::async_send_message(const std::string &host, int port,
+    const uint8_t *bytes, int len, bool is_ctrl, bool can_decline,
     std::function<void(void *)> cleanup, void *env) {
   std::string endpoint = get_endpoint(host, port);
   // There should be an entry for this endpoint.
@@ -480,8 +480,13 @@ bool TransportLayer::async_send_message(const std::string &host, int port,
     ss = sock_addr.out;
     if (ss == sockets_.end()) {
       // If reconnect failed ...
-      return false;
+      return -1;
     }
+  }
+
+  // If there is already too much back log, decline this send request.
+  if (can_decline && ss->data_remainder > kMaxDataBacklog) {
+    return -2;
   }
 
   uint8_t *hdr = static_cast<uint8_t *>(dcalloc(4, 1));
@@ -493,9 +498,7 @@ bool TransportLayer::async_send_message(const std::string &host, int port,
   async_socket_send(ss, hdr, 4, is_ctrl, release_chunk, hdr);
   async_socket_send(ss, bytes, len - 4, is_ctrl, cleanup, env);
 
-  VLOG(kLogLevel) << "Chunk queue backlog: "
-      << ss->ctrl_cqueue.size() + ss->data_cqueue.size();
-  return true;
+  return 0;
 }
 
 int TransportLayer::do_poll(struct pollfd fds[], nfds_t nfds, int timeout) {

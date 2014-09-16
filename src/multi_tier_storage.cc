@@ -542,11 +542,11 @@ void MultiTierStorage::run_gc(int thread_id) {
       int64_t lo = 0;
       while (cursor != begin_offset) {
         cursor = prev_offset(cursor);
-        VLOG(kLogLevel) << "Event# -- cursor: " << cursor / kEventLen
-            << "; processed: " << processed / kEventLen
-            << "; lo: " << lo << "; current_gc: " << current_gc;
+//        VLOG(kLogLevel) << "Event# -- cursor: " << cursor / kEventLen
+//            << "; processed: " << processed / kEventLen
+//            << "; lo: " << lo << "; current_gc: " << current_gc;
         if (is_data_event(ptr + cursor)) {
-          VLOG(kLogLevel) << "Data event #" << get_begin_seq(ptr + cursor);
+//          VLOG(kLogLevel) << "Data event #" << get_begin_seq(ptr + cursor);
           // For data events, move them rightwards if necessary.
           processed = prev_offset(processed);
           if (cursor != processed) {
@@ -554,8 +554,8 @@ void MultiTierStorage::run_gc(int thread_id) {
           }
           current_gc = false;
         } else {
-          VLOG(kLogLevel) << "Tombstone event [" << get_begin_seq(ptr + cursor)
-              << ", " << get_end_seq(ptr + cursor);
+//          VLOG(kLogLevel) << "Tombstone event [" << get_begin_seq(ptr + cursor)
+//              << ", " << get_end_seq(ptr + cursor);
           // For GCed events, set a mark if this is the first one in a series,
           // otherwise, update the mark.
           if (!current_gc) {
