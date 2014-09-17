@@ -62,8 +62,8 @@ int64_t MultiTierStorage::put_raw_events(
     end_offset = next_offset(end_offset);
     ++membuf.end_seq;
   }
-  // TODO(haoyan): Change this to LOG_EVERY_N when load gets heavier.
-  LOG(INFO) << "PUT " << sid << " " << (membuf.end_seq - 1);
+
+  LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
   // Finally, set the new end_offset and empty flag.
   membuf.end_offset = end_offset;
@@ -177,8 +177,7 @@ int64_t MultiTierStorage::put_events(
   membuf.end_seq = get_end_seq(data + (nevents - 1) * kEventLen);
   membuf.is_empty = false;
 
-  // TODO(haoyan): Change this to LOG_EVERY_N when load gets heavier.
-  LOG(INFO) << "PUT " << sid << " " << (membuf.end_seq - 1);
+  LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
   return membuf.end_seq;
 }

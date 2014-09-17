@@ -361,8 +361,8 @@ void SprinklerNode::client_publish(int batch_size) {
   }
 
   int rc = 0;
-  if (rc = tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,
-        false, true, release_chunk, msg)) {
+  if ((rc = tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,
+        false, true, release_chunk, msg))) {
     release_chunk(msg);
     if (rc == -1) {
       LOG(ERROR) << "client_publish: cannot talk to proxy " << proxies_[0].id

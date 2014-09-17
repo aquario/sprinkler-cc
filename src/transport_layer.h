@@ -110,6 +110,8 @@ class TransportLayer {
       std::function<void(const uint8_t *, int,
           std::function<void(void *)>, void *)> deliver);
 
+  ~TransportLayer();
+
   // Return the number of microseconds since we started.
   int64_t uptime();
 

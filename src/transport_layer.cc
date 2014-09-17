@@ -35,6 +35,12 @@ TransportLayer::TransportLayer(int id, int port,
   VLOG(kLogLevel) << "Created Sprinkler node with id " << id_;
 }
 
+TransportLayer::~TransportLayer() {
+  for (SocketIter sit = sockets_.begin(); sit != sockets_.end(); ++sit) {
+    shutdown(sit->skt, SHUT_RDWR);
+  }
+}
+
 // Return the number of microseconds since we started.
 int64_t TransportLayer::uptime() {
   struct timeval now;
