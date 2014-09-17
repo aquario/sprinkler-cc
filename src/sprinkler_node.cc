@@ -19,7 +19,7 @@ void SprinklerNode::start_proxy(int64_t duration) {
     if (proxies_[i].id == id_) {
       continue;
     }
-    VLOG(kLogLevel) << "Registering proxy " << proxies_[i].id;
+    LOG(INFO) << "Registering proxy " << proxies_[i].id;
     tl_.register_peer(proxies_[i].host, proxies_[i].port);
   }
 
@@ -28,7 +28,7 @@ void SprinklerNode::start_proxy(int64_t duration) {
 
     // Terminate if timeout is reached.
     if (duration > 0 && now > duration) {
-      VLOG(kLogLevel) << "Max duration reached.  Proxy is terminating.";
+      LOG(INFO) << "Max duration reached.  Proxy is terminating.";
       return;
     }
 
@@ -59,7 +59,7 @@ void SprinklerNode::start_client(
   duration *= 1000000;
 
   tl_.tl_listen();
-  VLOG(kLogLevel) << "Registering proxy (" << proxies_[0].host << ", "
+  LOG(INFO) << "Registering proxy (" << proxies_[0].host << ", "
       << proxies_[0].port << ")";
   tl_.register_peer(proxies_[0].host, proxies_[0].port);
 
@@ -69,7 +69,7 @@ void SprinklerNode::start_client(
 
     // Terminate if timeout is reached.
     if (duration > 0 && now > duration) {
-      VLOG(kLogLevel) << "Max duration reached.  Client is terminating.";
+      LOG(INFO) << "Max duration reached.  Client is terminating.";
       return;
     }
 
@@ -90,7 +90,7 @@ void SprinklerNode::forward_or_release(const uint8_t *data, int size,
   } else {
     // Forward the message to the next node in the chain.
     if (tl_.async_send_message(proxies_[0].host, proxies_[0].port,
-        data, size, is_ctrl, false, release, env)) {
+        data, size, is_ctrl, release, env)) {
       release(env);
       LOG(ERROR) << "Cannot talk to the successor node. Is it failing?";
     }
@@ -158,7 +158,7 @@ void SprinklerNode::send_adv_message() {
     }
 
     if (tl_.async_send_message(proxies_[i].host, proxies_[i].port,
-          msg, msg_len, true, false, release_chunk, msg)) {
+          msg, msg_len, true, release_chunk, msg)) {
       release_chunk(msg);
       LOG(ERROR) << "send_adv_message: cannot talk to proxy " << proxies_[i].id
           << ". Is it failing?";
@@ -219,7 +219,7 @@ void SprinklerNode::send_sub_message(int src, int8_t sid, int64_t next_seq) {
   itos(msg + 3, static_cast<uint64_t>(next_seq), 8);
 
   if (tl_.async_send_message(proxies_[src].host, proxies_[src].port,
-        msg, 11, true, false, release_chunk, msg)) {
+        msg, 11, true, release_chunk, msg)) {
     release_chunk(msg);
     LOG(ERROR) << "send_sub_message: cannot talk to proxy " << proxies_[src].id
         << ". Is it failing?";
@@ -234,7 +234,7 @@ void SprinklerNode::send_unsub_message(int src, int8_t sid) {
   *(msg + 2) = static_cast<uint8_t>(sid);
 
   if (tl_.async_send_message(proxies_[src].host, proxies_[src].port,
-        msg, 3, true, false, release_chunk, msg)) {
+        msg, 3, true, release_chunk, msg)) {
     release_chunk(msg);
     LOG(ERROR) << "send_unsub_message: cannot talk to proxy "
         << proxies_[src].id << ". Is it failing?";
@@ -290,6 +290,12 @@ void SprinklerNode::proxy_publish() {
         continue;
       }
 
+      // If the connection to destination proxy is not available or too busy,
+      // do not send this time.
+      if (!tl_.available_for_send(proxies_[pid].host, proxies_[pid].port)) {
+        continue;
+      }
+
       VLOG(kLogLevel) << "Fetch event (" << sid << ", " << next_seq
           << ") for proxy " << pid;
 
@@ -309,7 +315,7 @@ void SprinklerNode::proxy_publish() {
         int64_t size = 11 + nevents * kEventLen;
         // If send is successful, update next_seq accordingly.
         if (!tl_.async_send_message(proxies_[pid].host, proxies_[pid].port,
-              msg, size, false, true, release_chunk, msg)) {
+              msg, size, false, release_chunk, msg)) {
           // Update next_seq.
           next_seq = get_end_seq(msg + 11 + (nevents - 1) * kEventLen);
           request.second = next_seq;
@@ -349,6 +355,12 @@ void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
 void SprinklerNode::client_publish(int batch_size) {
   VLOG(kLogLevel) << "client_publish: client_id = " << id_
       << " on stream " << client_sid_ << " with " << batch_size << " events";
+  // If the connection to destination proxy is not available or too busy,
+  // do not send this time.
+  if (!tl_.available_for_send(proxies_[0].host, proxies_[0].port)) {
+    return;
+  }
+
   int64_t len = 12 + batch_size * kRawEventLen;
   uint8_t *msg =
       static_cast<uint8_t *>(dcalloc(TransportLayer::kMaxChunkSize, 1));
@@ -360,14 +372,11 @@ void SprinklerNode::client_publish(int batch_size) {
     itos(msg + 12 + i * kRawEventLen, SprinklerWorkload::get_next_key(), 8);
   }
 
-  int rc = 0;
-  if ((rc = tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,
-        false, true, release_chunk, msg))) {
+  if (tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,
+        false, release_chunk, msg)) {
     release_chunk(msg);
-    if (rc == -1) {
-      LOG(ERROR) << "client_publish: cannot talk to proxy " << proxies_[0].id
-          << ". Is it failing?";
-    }
+    LOG(ERROR) << "client_publish: cannot talk to proxy " << proxies_[0].id
+        << ". Is it failing?";
   }
 }
 

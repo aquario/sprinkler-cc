@@ -471,8 +471,22 @@ void TransportLayer::try_connect_all() {
   }
 }
 
+bool TransportLayer::available_for_send(const std::string &host, int port) {
+  std::string endpoint = get_endpoint(host, port);
+  // There should be an entry for this endpoint.
+  CHECK_EQ(addr_list_.count(endpoint), 1) << host << ':' << port;
+  SocketAddr &sock_addr = addr_list_[endpoint];
+  SocketIter ss = sock_addr.out;
+  if (ss == sockets_.end()) {
+    // If not connected, return with an error.
+    return false;
+  }
+  
+  return ss->data_remainder < kMaxDataBacklog;
+}
+
 int TransportLayer::async_send_message(const std::string &host, int port,
-    const uint8_t *bytes, int len, bool is_ctrl, bool can_decline,
+    const uint8_t *bytes, int len, bool is_ctrl,
     std::function<void(void *)> cleanup, void *env) {
   std::string endpoint = get_endpoint(host, port);
   // There should be an entry for this endpoint.
@@ -480,19 +494,8 @@ int TransportLayer::async_send_message(const std::string &host, int port,
   SocketAddr &sock_addr = addr_list_[endpoint];
   SocketIter ss = sock_addr.out;
   if (ss == sockets_.end()) {
-    // If not connected, try to reconnect.
-    VLOG(kLogLevel) << "No connection, recoonect to " << host << ":" << port;
-    try_connect(&sock_addr);
-    ss = sock_addr.out;
-    if (ss == sockets_.end()) {
-      // If reconnect failed ...
-      return -1;
-    }
-  }
-
-  // If there is already too much back log, decline this send request.
-  if (can_decline && ss->data_remainder > kMaxDataBacklog) {
-    return -2;
+    // If not connected, return with an error.
+    return -1;
   }
 
   uint8_t *hdr = static_cast<uint8_t *>(dcalloc(4, 1));
