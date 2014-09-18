@@ -31,7 +31,7 @@ DEFINE_int64(duration, 0,
 DEFINE_string(expr_name, "default", "Name of current experiment.");
 
 // Format of a proxy configuration file:
-//   <role>
+//   <role>   (Bitwise OR of: 1 -- any node; 2 -- head; 4 -- tail.
 //   <succ-host> <succ-port>    (Optional, non-tail node only.)
 //   <nproxies>  (Optional, tail node only.)
 //   <host-1> <port-1> <proxy-id-1>  (Optional, tail node only.)
@@ -79,6 +79,7 @@ int main(int argc, char **argv) {
     nproxies = 1;
     proxy.id = FLAGS_id;
     cfg_file >> proxy.host >> proxy.port;
+    proxies.push_back(proxy);
   }
 
   // Configuration of streams.
@@ -101,6 +102,7 @@ int main(int argc, char **argv) {
       << "Role of this proxy: " << role << ".\n"
       << "Listening to port " << FLAGS_port << ".\n"
       << "Number of straems: " << nstreams << ".\n"
+      << "Number of local streams: " << local_streams.size() << ".\n"
       << "In-memory buffer for each stream: " << mem_buf_size << " bytes.\n"
       << "Data chunks on disk: " << FLAGS_disk_chunk_size << " bytes.\n"
       << "Number of GC threads: " << FLAGS_gc_thread_count << ".\n"

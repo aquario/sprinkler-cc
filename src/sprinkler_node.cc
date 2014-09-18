@@ -16,7 +16,7 @@ void SprinklerNode::start_proxy(int64_t duration) {
   tl_.tl_listen();
   // Register peer proxies.
   for (int i = 0; i < nproxies_; ++i) {
-    if (proxies_[i].id == id_) {
+    if ((role_ & kTail) && proxies_[i].id == id_) {
       continue;
     }
     LOG(INFO) << "Registering proxy " << proxies_[i].id;
@@ -330,6 +330,11 @@ void SprinklerNode::proxy_publish() {
       if (nevents < 0) {
         LOG(WARNING) << "Failed to get events: error code " << nevents;
       } else {
+        VLOG(kLogLevel) << "proxy_publish to proxy " << pid << " stream " << sid
+            << " seq: [" << get_begin_seq(msg + 11)
+            << ", " << get_end_seq(msg + 11 + (nevents - 1) * kEventLen)
+            << ") next_seq: " << next_seq
+            << " nevents: " << nevents;
         // Encode #events.
         itos(msg + 3, nevents, 8);
         int64_t size = 11 + nevents * kEventLen;
@@ -350,6 +355,11 @@ void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
   int sid = static_cast<int>(*(data + 2));
   CHECK_LT(sid, nstreams_);
   int64_t nevents = static_cast<int64_t>(stoi(data + 3, 8));
+  VLOG(kLogLevel) << "handle_proxy_publish: proxy " << pid << " stream " << sid
+      << " seq: [" << get_begin_seq(data + 11)
+      << ", " << get_end_seq(data + 11 + (nevents - 1) * kEventLen)
+      << ") next_seq: " << sub_info_[sid].next_seq
+      << " nevents: " << nevents;
   if (nevents == 0) {
     LOG(ERROR) << "handle_proxy_publish: nevents == 0.";
   } else if (get_begin_seq(data + 11) > sub_info_[sid].next_seq) {
@@ -363,9 +373,6 @@ void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
     // We have already received all of these.
     LOG(WARNING) << "handle_proxy_publish: all these events are too old.";
   } else {
-    VLOG(kLogLevel) << "handle_proxy_publish from proxy " << pid
-        << " on stream " << sid << " with " << nevents << " events";
-
     int64_t next_seq =
         storage_.put_events(sid, nevents, const_cast<uint8_t *>(data + 11));
     sub_info_[sid].next_seq = next_seq;
@@ -403,6 +410,7 @@ void SprinklerNode::client_publish(int batch_size) {
 void SprinklerNode::handle_client_publish(const uint8_t *data) {
   int cid = static_cast<int>(stoi(data + 1, 2));
   int sid = static_cast<int>(*(data + 3));
+  VLOG(kLogLevel) << "client_publish: client " << cid << " to stream " << sid;
   CHECK(local_streams_.count(sid));   // Only accept if the sid is local.
   int64_t nevents = static_cast<int64_t>(stoi(data + 4, 8));
 

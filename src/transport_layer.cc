@@ -10,6 +10,7 @@
 #include <glog/logging.h>
 
 #include "dmalloc.h"
+#include "sprinkler_common.h"
 
 #ifndef IOV_MAX
 #define IOV_MAX 1024
@@ -70,13 +71,13 @@ SocketIter TransportLayer::add_socket(int skt,
   return --iter;
 }
 
-void TransportLayer::async_socket_send(
-    SocketIter ss, const uint8_t *data, int size, bool is_ctrl,
+void TransportLayer::async_socket_send(SocketIter ss,
+    uint8_t *hdr, const uint8_t *data, int size, bool is_ctrl,
     std::function<void(void *)> cleanup, void *env) {
   VLOG(kLogLevel) << "async_socket_send: send " << size << " bytes.";
   CHECK(ss != sockets_.end());
 
-  Chunk chunk(data, size, cleanup, env);
+  Chunk chunk(hdr, data, size, cleanup, env);
 
   if (is_ctrl) {
     ss->ctrl_cqueue.push_back(chunk);
@@ -93,8 +94,8 @@ int TransportLayer::do_sendmsg(int skt, struct msghdr *mh) {
   return sendmsg(skt, mh, 0);
 }
 
-int TransportLayer::prepare_iovec(const std::list<Chunk> &cqueue, int offset,
-    struct iovec *iov, int start) {
+int TransportLayer::prepare_iovec(const std::list<Chunk> &cqueue,
+    int offset, struct iovec *iov, int start) {
   int iovlen = start;
 
   std::list<Chunk>::const_iterator cit;
@@ -106,12 +107,25 @@ int TransportLayer::prepare_iovec(const std::list<Chunk> &cqueue, int offset,
       if (offset >= cit->size) {
         offset -= cit->size;
       } else {
-        iov[iovlen].iov_base =
-            static_cast<void *>(const_cast<uint8_t *>(cit->data + offset));
-        iov[iovlen].iov_len = cit->size - offset;
-        iovlen++;
-        total += cit->size - offset;
-        offset = 0;
+        if (offset < 4) {
+          iov[iovlen].iov_base =
+              static_cast<void *>(const_cast<uint8_t *>(cit->hdr + offset));
+          iov[iovlen].iov_len = 4 - offset;
+          iovlen++;
+          total += 4 - offset;
+          offset = 0;
+        } else {
+          offset -= 4;
+        }
+
+        if (iovlen < IOV_MAX) {
+          iov[iovlen].iov_base =
+              static_cast<void *>(const_cast<uint8_t *>(cit->data + offset));
+          iov[iovlen].iov_len = cit->size - 4 - offset;
+          iovlen++;
+          total += cit->size - 4 - offset;
+          offset = 0;
+        }
       }
     }
   }
@@ -140,8 +154,10 @@ int TransportLayer::send_ready(SocketIter ss) {
     return 1;
   }
 
+  // Add messages into iovec.  Control messages have higher priority over
+  // data messages.
   struct iovec *iov = (struct iovec *) dcalloc(sizeof(*iov), IOV_MAX);
-  int iovlen;
+  int iovlen = 0;
   iovlen = prepare_iovec(ss->ctrl_cqueue, ss->ctrl_offset, iov, 0);
   if (iovlen < IOV_MAX) {
     iovlen = prepare_iovec(ss->data_cqueue, ss->data_offset, iov, iovlen);
@@ -185,6 +201,7 @@ int TransportLayer::send_ready(SocketIter ss) {
       && ss->ctrl_offset >= cit->size) {
     ss->ctrl_offset -= cit->size;
     Chunk &chunk = ss->ctrl_cqueue.front();
+    release_chunk(chunk.hdr);
     chunk.cleanup(chunk.env);
     ss->ctrl_cqueue.pop_front();
   }
@@ -193,7 +210,23 @@ int TransportLayer::send_ready(SocketIter ss) {
       && ss->data_offset >= cit->size) {
     ss->data_offset -= cit->size;
     Chunk &chunk = ss->data_cqueue.front();
+    release_chunk(chunk.hdr);
     chunk.cleanup(chunk.env);
+    ss->data_cqueue.pop_front();
+  }
+
+  // If we are half way through sending a data chunk, promote it to the front
+  // of the ctrl queue so that it can be sent in its entirety.
+  if (ss->data_offset > 0) {
+    CHECK_EQ(ss->ctrl_cqueue.size(), 0);
+    Chunk &chunk = ss->data_cqueue.front();
+
+    ss->ctrl_offset = ss->data_offset;
+    ss->ctrl_remainder = chunk.size - ss->data_offset;
+    ss->data_offset = 0;
+    ss->data_remainder -= ss->ctrl_remainder;
+
+    ss->ctrl_cqueue.push_back(chunk);
     ss->data_cqueue.pop_front();
   }
 
@@ -205,7 +238,7 @@ int TransportLayer::send_ready(SocketIter ss) {
 }
 
 int TransportLayer::do_recv(int skt, uint8_t *data, int size) {
-  return recv(skt, static_cast<uint8_t *>(data), size, 0);
+  return recv(skt, data, size, 0);
 }
 
 void TransportLayer::release_chunk(void *chunk) {
@@ -247,7 +280,12 @@ int TransportLayer::recv_ready(SocketIter ss) {
     return 0;
   }
 
-  VLOG(kLogLevel) << "recv_ready: received " << n << " out of " << size << " bytes";
+  VLOG(kLogLevel) << "recv_ready: received " << n
+      << " out of " << size << " bytes;" << " previously received "
+      << ss->received << " bytes";
+  if (ss->received == 0) {
+    debug_show_memory(ss->recv_buffer, 32, kLogLevel); 
+  }
   ss->received += n;
 
   // If we do not yet have a complete header, wait for more.
@@ -279,6 +317,11 @@ int TransportLayer::recv_ready(SocketIter ss) {
   do {
     // Deliver a part of the chunk.
     uint8_t *copy = static_cast<uint8_t *>(dmalloc(size - 4));
+    if (copy == NULL) {
+      LOG(FATAL) << "malloc returns null when requesting "
+          << size - 4 << " bytes.";
+    }
+    CHECK_LE(offset + 4 + size, kMaxChunkSize);
     memmove(copy, ss->recv_buffer + offset + 4, size - 4);
     ss->deliver(copy, size - 4, release_chunk, copy);
     offset += size;
@@ -464,7 +507,7 @@ void TransportLayer::try_connect(SocketAddr *socket_addr) {
 }
 
 void TransportLayer::try_connect_all() {
-  VLOG(kLogLevel) << "try_connect_all";
+  VLOG(kLogLevel) << "try_connect_all: " << addr_list_.size() << " peers.";
   std::unordered_map<std::string, SocketAddr>::iterator sit;
   for (sit = addr_list_.begin(); sit != addr_list_.end(); ++sit) {
     try_connect(&sit->second);
@@ -482,7 +525,7 @@ bool TransportLayer::available_for_send(const std::string &host, int port) {
     return false;
   }
   
-  return ss->data_remainder < kMaxDataBacklog;
+  return ss->ctrl_remainder + ss->data_remainder < kMaxDataBacklog;
 }
 
 int TransportLayer::async_send_message(const std::string &host, int port,
@@ -504,8 +547,7 @@ int TransportLayer::async_send_message(const std::string &host, int port,
   hdr[0] = len & 0xFF;
   hdr[1] = (len >> 8) & 0xFF;
   hdr[2] = (len >> 16) & 0xFF;
-  async_socket_send(ss, hdr, 4, is_ctrl, release_chunk, hdr);
-  async_socket_send(ss, bytes, len - 4, is_ctrl, cleanup, env);
+  async_socket_send(ss, hdr, bytes, len, is_ctrl, cleanup, env);
 
   return 0;
 }

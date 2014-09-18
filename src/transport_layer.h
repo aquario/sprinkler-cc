@@ -26,14 +26,15 @@ typedef std::list<SprinklerSocket>::iterator SocketIter;
 
 // Data chunk to be sent out from a socket.
 struct Chunk {
+  uint8_t *hdr;
   const uint8_t *data;
   int size;
   std::function<void(void *)> cleanup;
   void *env;
 
-  Chunk(const uint8_t *data, int size,
+  Chunk(uint8_t *hdr, const uint8_t *data, int size,
       std::function<void(void *)> cleanup, void *env)
-    : data(data), size(size), cleanup(cleanup), env(env) {}
+    : hdr(hdr), data(data), size(size), cleanup(cleanup), env(env) {}
 
   ~Chunk() {}
 };
@@ -176,7 +177,7 @@ class TransportLayer {
   // Data buffer is freed by calling the cleanup handler after the data is
   // sent and the chunk's deconstructor is called.
   void async_socket_send(SocketIter ss,
-      const uint8_t *data, int size, bool is_ctrl,
+      uint8_t *hdr, const uint8_t *data, int size, bool is_ctrl,
       std::function<void(void *)> cleanup, void *env);
 
   // Copy what is queued into an iovec, skipping over what has already
