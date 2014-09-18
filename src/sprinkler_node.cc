@@ -28,7 +28,8 @@ void SprinklerNode::start_proxy(int64_t duration) {
 
     // Terminate if timeout is reached.
     if (duration > 0 && now > duration) {
-      LOG(INFO) << "Max duration reached.  Proxy is terminating.";
+      LOG(INFO) << "Max duration reached.  Proxy is terminating ...";
+      storage_.report_state();
       return;
     }
 

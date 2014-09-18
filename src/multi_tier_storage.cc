@@ -65,9 +65,10 @@ int64_t MultiTierStorage::put_raw_events(
 
   LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
-  // Finally, set the new end_offset and empty flag.
+  // Finally, set the new end_offset, empty flag, and update the counter.
   membuf.end_offset = end_offset;
   membuf.is_empty = false;
+  membuf.bytes_wrote += nevents * kEventLen;
 
   return membuf.end_seq;
 }
@@ -109,7 +110,7 @@ int64_t MultiTierStorage::put_events(
       membuf.gc_begin_offset = -1;
       membuf.gc_table_begin_offset = -1;
       // The first new event covers the all the content currently in the buffer.
-      bytes_saved_[sid] += get_used_space(membuf);
+      membuf.bytes_saved += get_used_space(membuf);
       // Clear up the entire buffer.
       membuf.begin_offset = end_offset;
       membuf.begin_seq = new_begin;
@@ -124,7 +125,7 @@ int64_t MultiTierStorage::put_events(
           membuf.gc_table_begin_offset = -1;
         }
         // Move pointers backwards for one event.
-        bytes_saved_[sid] += kEventLen;
+        membuf.bytes_saved += kEventLen;
         membuf.end_offset = end_offset = prev_offset(end_offset);
         membuf.end_seq = end_seq = get_begin_seq(ptr + end_offset);
         memmove(data + 1, ptr + end_offset + 1, 8);
@@ -147,7 +148,7 @@ int64_t MultiTierStorage::put_events(
         memmove(data + 1, ptr + fit_offset + 1, 8);
       }
 
-      bytes_saved_[sid] += distance(fit_offset, end_offset);
+      membuf.bytes_saved += distance(fit_offset, end_offset);
 
       membuf.end_offset = end_offset = fit_offset;
       membuf.end_seq = end_seq = get_begin_seq(data);
@@ -176,6 +177,8 @@ int64_t MultiTierStorage::put_events(
       : end_offset - mem_buf_size_);
   membuf.end_seq = get_end_seq(data + (nevents - 1) * kEventLen);
   membuf.is_empty = false;
+  // Update the counter.
+  membuf.bytes_wrote += nevents * kEventLen;
 
   LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
@@ -246,6 +249,21 @@ int64_t MultiTierStorage::get_events(
     CHECK_NE(nevents, 0);
     return nevents;
   }
+}
+
+void MultiTierStorage::report_state() {
+  for (int i = 0; i < nstreams_; ++i) {
+    report_state(i);
+  }
+}
+
+void MultiTierStorage::report_state(int sid) {
+  LOG(INFO) << "STATS: stream " << sid << " "
+      << mem_store_[sid].end_seq - 1 << " "
+      << mem_store_[sid].bytes_wrote << " "
+      << mem_store_[sid].bytes_saved << " ["
+      << mem_store_[sid].begin_offset << ", "
+      << mem_store_[sid].end_offset << ")";
 }
 
 int64_t MultiTierStorage::distance(int64_t begin, int64_t end) {
@@ -574,7 +592,7 @@ void MultiTierStorage::run_gc(int thread_id) {
         }
       }
 
-      bytes_saved_[my_streams[stream_idx]] += distance(begin_offset, processed);
+      membuf.bytes_saved += distance(begin_offset, processed);
 
       // d) Squeeze the buffer rightwards.
       // If there is valid buffer region before where we started, we need
@@ -589,7 +607,7 @@ void MultiTierStorage::run_gc(int thread_id) {
           // From this point on, begin_offset is used as the right boundary
           // of copying the previous chunk.
           begin_offset = cursor;
-          bytes_saved_[my_streams[stream_idx]] += kEventLen;
+          membuf.bytes_saved += kEventLen;
         }
 
         // Move the data before begin_offset rightwards.
@@ -670,10 +688,8 @@ void MultiTierStorage::run_gc(int thread_id) {
       }
     }
 
-    LOG(INFO) << "Bytes saved on stream " << my_streams[stream_idx]
-        << ": " << bytes_saved_[my_streams[stream_idx]];
-    VLOG(kLogLevel) << "membuf after GC: [" << membuf.begin_offset << ", "
-        << membuf.end_offset << ")";
+//    report_state(my_streams[stream_idx]);
+
     pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
   }
 }

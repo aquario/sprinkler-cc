@@ -28,8 +28,7 @@ class MultiTierStorage {
       max_gc_table_size_(max_gc_table_size),
       max_gc_chunk_size_(max_gc_chunk_size),
       gc_thread_count_(gc_thread_count), min_events_to_gc_(min_events_to_gc),
-      gc_threads_(gc_thread_count), gc_hints_(gc_thread_count),
-      bytes_saved_(nstreams) {
+      gc_threads_(gc_thread_count), gc_hints_(gc_thread_count) {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
     disk_chunk_size_ = disk_chunk_size;
@@ -65,6 +64,11 @@ class MultiTierStorage {
   int64_t get_events(int sid, int64_t first_seq, int64_t max_events,
       uint8_t *buffer);
 
+  // Report the state of all streams/a stream: total events added, bytes wrote,
+  // space saved by GC, and current used buffer range.
+  void report_state();
+  void report_state(int sid);
+
   // Error codes.
   static const int64_t kErrFuture = -1;  // Asked for a future seq#.
   static const int64_t kErrPast = -2;  // Asked for a seq# that is discarded.
@@ -81,6 +85,10 @@ class MultiTierStorage {
     int64_t gc_table_begin_offset, gc_table_end_offset;
     bool is_empty;
     uint8_t *chunk;
+    // Amount of data wrote to this stream, in bytes.
+    int64_t bytes_wrote;
+    // Space saved by GC for this stream, in bytes.
+    int64_t bytes_saved;
 
     MemBuffer() {
       begin_seq = end_seq = 1;
@@ -89,6 +97,7 @@ class MultiTierStorage {
       gc_table_begin_offset = gc_table_end_offset = -1;
       is_empty = true;
       chunk = static_cast<uint8_t *>(dcalloc(mem_buf_size_, 1));
+      bytes_wrote = bytes_saved = 0;
       CHECK_NOTNULL(chunk);
     }
 
@@ -192,8 +201,6 @@ class MultiTierStorage {
   std::vector<pthread_t> gc_threads_;
   // Context hints for each thread.
   std::vector<GcHint> gc_hints_;
-  // Space saved by GC for each stream, in bytes.
-  std::vector<int64_t> bytes_saved_;
 
   // Size of an on-disk data chunk in bytes.
   static int64_t disk_chunk_size_;
