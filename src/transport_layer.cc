@@ -283,9 +283,6 @@ int TransportLayer::recv_ready(SocketIter ss) {
   VLOG(kLogLevel) << "recv_ready: received " << n
       << " out of " << size << " bytes;" << " previously received "
       << ss->received << " bytes";
-  if (ss->received == 0) {
-    debug_show_memory(ss->recv_buffer, 32, kLogLevel); 
-  }
   ss->received += n;
 
   // If we do not yet have a complete header, wait for more.
