@@ -166,11 +166,14 @@ class SprinklerNode {
     kCliPubMsg,   // Publish unformatted events from client.
   };
 
+  // Time intervals for periodical events in microseconds.
+  static const int64_t kAdvPeriod = 2 * 1000000;    // 2 seconds.
+  static const int64_t kPubPeriod = 2 * 1000;      // 2 milliseconds.
+  // Maximum time for an advertisement message to be effective.
+  // 6 seconds, i.e. 3 advertisement intervals.
+  static const int64_t kMaxAdvLease = 6 * 1000000;
   // Threshold on changing subscription.
   static constexpr double kSubThd = 1000;
-  // Time intervals for periodical events in microseconds.
-  static const int kAdvPeriod = 2 * 1000000;    // 2 seconds.
-  static const int kPubPeriod = 2 * 1000;      // 2 milliseconds.
   // Max header length for any Sprinkler message.
   static const int kMaxHeaderSize = 32;
   // Max #events per message.

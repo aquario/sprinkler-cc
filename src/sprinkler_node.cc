@@ -178,16 +178,24 @@ void SprinklerNode::handle_adv_message(const uint8_t *dst) {
     }
     int64_t new_max_adv = static_cast<int64_t>(stoi(dst + 2 + (i * 8), 8));
     // Check if a change of subscription is necessary.
-    if (new_src != sub_info_[i].src && new_max_adv > 0 &&
-        should_update(sub_info_[i], new_max_adv, timestamp)) {
-      // Update the subscription to new source.
-      if (role_ & kTail) {
-        if (sub_info_[i].src != -1) {
-          send_unsub_message(sub_info_[i].src, i);
+    if (new_src != sub_info_[i].src) {
+      if (new_max_adv > 0 &&
+          should_update(sub_info_[i], new_max_adv, timestamp)) {
+        // Update the subscription to new source.
+        if (role_ & kTail) {
+          if (sub_info_[i].src != -1) {
+            send_unsub_message(sub_info_[i].src, i);
+          }
+          send_sub_message(new_src, i, sub_info_[i].next_seq);
         }
-        send_sub_message(new_src, i, sub_info_[i].next_seq);
+        sub_info_[i].src = new_src;
+        sub_info_[i].max_adv = new_max_adv;
+        sub_info_[i].timestamp = timestamp;
       }
-      sub_info_[i].src = new_src;
+    } else {
+      // The max seq# broadcasted from the same source should be non-descending.
+      CHECK_GE(new_max_adv, sub_info_[i].max_adv);
+      // Update current subscription.
       sub_info_[i].max_adv = new_max_adv;
       sub_info_[i].timestamp = timestamp;
     }
@@ -198,6 +206,17 @@ inline bool SprinklerNode::should_update(
     const SubInfo &sub_info, int64_t new_max, int64_t timestamp) {
   // If there's no previous subscription, establish one.
   if (sub_info.src == -1) {
+    return true;
+  }
+
+  // No sub if all what the advertiser have is no more than what we've received.
+  if (sub_info.next_seq > new_max) {
+    return false;
+  }
+
+  // If we haven't heard from the current subscription for too long,
+  // switch because we want to at least get something.
+  if (timestamp - sub_info.timestamp > kMaxAdvLease) {
     return true;
   }
 
