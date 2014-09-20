@@ -2,6 +2,7 @@
 #include <glog/logging.h>
 
 #include "sprinkler_node.h"
+#include "sprinkler_workload.h"
 
 // Required parameters.
 DEFINE_int32(id, -1,
@@ -18,6 +19,8 @@ DEFINE_int64(duration, 0,
 DEFINE_int32(interval, 1000000,
     "Interval between publishing two batches of events, default 1s.");
 DEFINE_int32(batch_size, 1, "Number of events per batch, default 1.");
+DEFINE_int32(workload_cid, -1,
+    "Chunk# of pre-generated workload file. -1 means not used.");
 
 int main(int argc, char **argv) {
   google::ParseCommandLineFlags(&argc, &argv, true);
@@ -54,10 +57,17 @@ int main(int argc, char **argv) {
       << FLAGS_proxy_host << ", " << FLAGS_proxy_port << ")\n"
       << "Publish interval: " << FLAGS_interval << " microseconds.\n"
       << "Batch size: " << FLAGS_batch_size << ".\n";
+
+  if (FLAGS_workload_cid > -1) {
+    SprinklerWorkload::init_workload(FLAGS_workload_cid);
+  }
   
   SprinklerNode node(FLAGS_id, FLAGS_listen_port, SprinklerNode::kClient,
-      FLAGS_stream_id, proxies);
+      FLAGS_stream_id, proxies, (FLAGS_workload_cid > -1));
   node.start_client(FLAGS_duration, FLAGS_interval, FLAGS_batch_size);
 
+  if (FLAGS_workload_cid > -1) {
+    SprinklerWorkload::close_workload();
+  }
   return 0;
 }

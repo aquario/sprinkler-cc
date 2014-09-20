@@ -28,8 +28,10 @@ void SprinklerNode::start_proxy(int64_t duration) {
 
     // Terminate if timeout is reached.
     if (duration > 0 && now > duration) {
+      storage_.grab_all_locks();
       LOG(INFO) << "Max duration reached.  Proxy is terminating ...";
       storage_.report_state();
+      SprinklerWorkload::close_workload();
       return;
     }
 
@@ -396,7 +398,10 @@ void SprinklerNode::client_publish(int batch_size) {
   *(msg + 3) = client_sid_;
   itos(msg + 4, batch_size, 8);
   for (int i = 0; i < batch_size; ++i) {
-    itos(msg + 12 + i * kRawEventLen, SprinklerWorkload::get_next_key(), 8);
+    int64_t key = has_workload_
+        ? SprinklerWorkload::get_next_wl_key()
+        : SprinklerWorkload::get_next_key();
+    itos(msg + 12 + i * kRawEventLen, key, 8);
   }
 
   if (tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,

@@ -73,8 +73,9 @@ class SprinklerNode {
 
   // Constructor for client.
   SprinklerNode(int id, int port, int role, int sid,
-      const std::vector<Proxy> proxies)
+      const std::vector<Proxy> proxies, bool has_workload)
     : id_(id), role_(role), nproxies_(1), proxies_(proxies),
+      has_workload_(has_workload),
       tl_(id, port,
           std::bind(&SprinklerNode::outgoing, this,
               std::placeholders::_1, std::placeholders::_2),
@@ -217,6 +218,9 @@ class SprinklerNode {
 
   // For client: the stream it publishes to.
   int client_sid_;
+
+  // If the client is using a pre-computed workload file.
+  bool has_workload_;
 };
 
 #endif  // SPRINKLER_NODE_H_

@@ -32,6 +32,8 @@ class MultiTierStorage {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
     disk_chunk_size_ = disk_chunk_size;
+    LOG(INFO) << "mem_buf_size_ = " << mem_buf_size_;
+    LOG(INFO) << "disk_chunk_size_ = " << disk_chunk_size_;
 
     // This goes here since it needs mem_buf_size_.
     mem_store_ = std::vector<MemBuffer>(nstreams);
@@ -69,6 +71,10 @@ class MultiTierStorage {
   void report_state();
   void report_state(int sid);
 
+  // Grab all the mutex locks so that no GC thread could proceed.
+  // This is called before a sprinkler node terminates itself.
+  void grab_all_locks();
+
   // Error codes.
   static const int64_t kErrFuture = -1;  // Asked for a future seq#.
   static const int64_t kErrPast = -2;  // Asked for a seq# that is discarded.
@@ -81,6 +87,7 @@ class MultiTierStorage {
   struct MemBuffer {
     int64_t begin_seq, end_seq;
     int64_t begin_offset, end_offset;
+    int64_t prev_end_seq; // For debugging: end_seq after last put_raw.
     int64_t gc_begin_offset;
     int64_t gc_table_begin_offset, gc_table_end_offset;
     bool is_empty;
@@ -91,7 +98,7 @@ class MultiTierStorage {
     int64_t bytes_saved;
 
     MemBuffer() {
-      begin_seq = end_seq = 1;
+      begin_seq = end_seq = prev_end_seq = 1;
       begin_offset = end_offset = 0;
       gc_begin_offset = -1;
       gc_table_begin_offset = gc_table_end_offset = -1;

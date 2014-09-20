@@ -30,9 +30,10 @@ void MultiTierStorage::init_gc() {
 
 int64_t MultiTierStorage::put_raw_events(
     int sid, int64_t nevents, const uint8_t *data) {
-  VLOG(kLogLevel) << "put_raw_events: stream " << sid << "; " << nevents
-      << " events.";
   MemBuffer &membuf = mem_store_[sid];
+  VLOG(kLogLevel) << "put_raw_events: stream " << sid << "; " << nevents
+      << " events, staring " << membuf.end_seq << ".";
+  CHECK_EQ(membuf.end_seq, membuf.prev_end_seq);
   if (nevents == 0) {
     LOG(WARNING) << "put_raw_events invoked with 0 events";
     return membuf.end_seq;
@@ -59,6 +60,23 @@ int64_t MultiTierStorage::put_raw_events(
   for (int i = 0; i < nevents; ++i) {
     itos(ptr + end_offset + 1, membuf.end_seq, 8);
     memmove(ptr + end_offset + 9, data + i * kRawEventLen, kRawEventLen);
+    int64_t end1 = get_end_seq(ptr + prev_offset(end_offset));
+    int64_t begin1 = get_begin_seq(ptr + end_offset);
+
+    if (end_offset != membuf.begin_offset &&
+        end1 != begin1) {
+      debug_show_memory(ptr + prev_offset(prev_offset(end_offset)), kEventLen * 2, 1);
+      debug_show_memory(ptr + end_offset, kEventLen * 2, 1);
+      LOG(FATAL) << "Black hole detected at event " << i << "\n"
+          << "CHECK: " << end1 << " " << begin1 << "\n"
+          << " " << membuf.end_seq << ": "
+          << end_offset << " " << int(*(ptr + prev_offset(end_offset))) << " "
+          << int(*(ptr + end_offset)) << " ["
+          << get_begin_seq(ptr + prev_offset(end_offset)) << ", "
+          << get_end_seq(ptr + prev_offset(end_offset)) << "), ["
+          << get_begin_seq(ptr + end_offset)
+          << ", " << get_end_seq(ptr + end_offset) << ")";
+    }
     end_offset = next_offset(end_offset);
     ++membuf.end_seq;
   }
@@ -67,6 +85,7 @@ int64_t MultiTierStorage::put_raw_events(
 
   // Finally, set the new end_offset, empty flag, and update the counter.
   membuf.end_offset = end_offset;
+  membuf.prev_end_seq = membuf.end_seq;
   membuf.is_empty = false;
   membuf.bytes_wrote += nevents * kEventLen;
 
@@ -266,6 +285,12 @@ void MultiTierStorage::report_state(int sid) {
       << mem_store_[sid].end_offset << ")";
 }
 
+void MultiTierStorage::grab_all_locks() {
+  for (int i = 0; i < nstreams_; ++i) {
+    pthread_mutex_lock(&mutex_[i]);
+  }
+}
+
 int64_t MultiTierStorage::distance(int64_t begin, int64_t end) {
   if (end >= begin) {
     return end - begin;
@@ -381,11 +406,16 @@ void MultiTierStorage::flush_to_disk(int sid) {
   pthread_mutex_lock(&mutex_[sid]);
 
   MemBuffer &membuf = mem_store_[sid];
+
   int64_t begin_offset = membuf.begin_offset;
   int64_t end_offset = begin_offset + disk_chunk_size_;
   if (end_offset >= mem_buf_size_) {
     end_offset -= mem_buf_size_;
   }
+
+  LOG(INFO) << "FLUSH " << sid << " [" << membuf.begin_offset
+      << ", " << membuf.end_offset << ")";
+
   uint8_t *ptr = membuf.chunk;
   int unit_size = sizeof(uint8_t);
 
@@ -401,12 +431,8 @@ void MultiTierStorage::flush_to_disk(int sid) {
     fwrite(ptr, unit_size,
         disk_chunk_size_ - (mem_buf_size_ - begin_offset), fout);
   }
-  begin_offset += disk_chunk_size_;
-  if (begin_offset >= mem_buf_size_) {
-    begin_offset -= mem_buf_size_;
-  }
-  membuf.begin_seq = get_begin_seq(ptr + begin_offset);
-  membuf.begin_offset = begin_offset;
+  membuf.begin_seq = get_begin_seq(ptr + end_offset);
+  membuf.begin_offset = end_offset;
 
   fclose(fout);
   used_chunk_no_[sid].push_back(next_chunk_no_[sid]);
@@ -420,6 +446,10 @@ void MultiTierStorage::flush_to_disk(int sid) {
         membuf.gc_table_begin_offset)) {
     membuf.gc_table_begin_offset = -1;
   }
+
+  VLOG(kLogLevel) << "New begin_offset: " << membuf.begin_offset
+      << " gc_begin_offset " << membuf.gc_begin_offset
+      << " gc_table_begin_offset " << membuf.gc_table_begin_offset;
 
   pthread_mutex_unlock(&mutex_[sid]);
 }
@@ -449,15 +479,12 @@ void MultiTierStorage::run_gc(int thread_id) {
   }
 
   // Round robin across these streams.
-  int stream_idx = -1;
+  int stream_idx = 0;
   while (true) {
-    if (++stream_idx == my_streams.size()) {
-      stream_idx = 0;
-    }
-
-    MemBuffer &membuf = mem_store_[my_streams[stream_idx]];
+    int sid = my_streams[stream_idx];
+    MemBuffer &membuf = mem_store_[sid];
     uint8_t *ptr = membuf.chunk;
-    GcInfo &gc_info = metadata[my_streams[stream_idx]];
+    GcInfo &gc_info = metadata[sid];
     
     // Skip GC if there are too few events.
     int64_t total_events =
@@ -467,7 +494,7 @@ void MultiTierStorage::run_gc(int thread_id) {
     }
 
     // Perform GC with mutex.
-    pthread_mutex_lock(&mutex_[my_streams[stream_idx]]);
+    pthread_mutex_lock(&mutex_[sid]);
 
     // Construct GC table.
     // Here we assume that flush_to_disk will never interfere with GC table
@@ -505,9 +532,10 @@ void MultiTierStorage::run_gc(int thread_id) {
       int64_t key = get_object_id(ptr + i);
       gc_info.table.insert(key);
     }
-    VLOG(kLogLevel) << "Constructed GC table in [" << gc_table_begin_offset
+    LOG(INFO) << "New GC pass on stream " << sid
+        << ": (" << membuf.begin_offset << ", " << gc_table_begin_offset
         << ", " << gc_table_end_offset << ") with " << gc_info.table.size()
-        << " distinct events";
+        << " distinct events in GC table.";
 
     // Set up flags in MemBuffer marking an on-going GC activity.
     membuf.gc_begin_offset = membuf.begin_offset;
@@ -532,8 +560,8 @@ void MultiTierStorage::run_gc(int thread_id) {
         pause_offset = end_offset;
       }
 
-      VLOG(kLogLevel) << "Starting GC on [" << begin_offset << ", "
-          << pause_offset << ")";
+      VLOG(kLogLevel) << "Starting GC on stream " << sid
+          << ": [" << begin_offset << ", " << pause_offset << ")";
 
       // b) In buffer [begin_offset, pause_offset), scan for events should be
       // GCed, and turn them into (singleton) tombstones.
@@ -542,6 +570,17 @@ void MultiTierStorage::run_gc(int thread_id) {
         if (is_data_event(ptr + cursor) &&
             gc_info.table.count(get_object_id(ptr + cursor)) == 1) {
           to_tombstone(ptr + cursor);
+          if (next_offset(cursor) != pause_offset &&
+              get_end_seq(ptr + cursor) !=
+                get_begin_seq(ptr + next_offset(cursor))) {
+            LOG(FATAL) << "Black hole detected: "
+                << cursor << " " << int(*(ptr + cursor)) << " "
+                << int(*(ptr + next_offset(cursor)))
+                << " [" << get_begin_seq(ptr + cursor)
+                << ", " << get_end_seq(ptr + cursor) << "), ["
+                << get_begin_seq(ptr + next_offset(cursor)) << ", "
+                << get_end_seq(ptr + next_offset(cursor)) << ")";
+          }
         }
 
         cursor = next_offset(cursor);
@@ -601,7 +640,7 @@ void MultiTierStorage::run_gc(int thread_id) {
         // If the scan ended with a GC event, we should check if the event just
         // before begin_offset is also a GC event, and if so, merge them.
         cursor = prev_offset(begin_offset);
-        if (is_tombstone(ptr + cursor)) {
+        if (is_tombstone(ptr + processed) && is_tombstone(ptr + cursor)) {
           CHECK_EQ(get_end_seq(ptr + cursor), get_begin_seq(ptr + processed));
           memmove(ptr + processed + 1, ptr + cursor + 1, 8);
           // From this point on, begin_offset is used as the right boundary
@@ -621,11 +660,11 @@ void MultiTierStorage::run_gc(int thread_id) {
 
         // Offsets at which the source or destination buffer breaks.
         std::vector<int> cutoffs;
-        if (begin_offset < membuf.begin_offset) {
-          cutoffs.push_back(mem_buf_size_ - membuf.begin_offset);
+        if (begin_offset < src_offset) {
+          cutoffs.push_back(mem_buf_size_ - src_offset);
         }
         if (processed < dst_offset) {
-          cutoffs.push_back(mem_buf_size_ - processed);
+          cutoffs.push_back(mem_buf_size_ - dst_offset);
         }
         cutoffs.push_back(0);
         cutoffs.push_back(distance(membuf.begin_offset, begin_offset));
@@ -633,6 +672,18 @@ void MultiTierStorage::run_gc(int thread_id) {
         std::sort(cutoffs.begin(), cutoffs.end());
         auto last = std::unique(cutoffs.begin(), cutoffs.end());
         cutoffs.erase(last, cutoffs.end());
+
+        if (cutoffs.size() > 2) {
+          std::string logmsg = "Cutoffs:";
+          for (int i = 0; i < cutoffs.size(); ++i) {
+            logmsg += " " + std::to_string(cutoffs[i]);
+          }
+          VLOG(kLogLevel) << "Moving [" << src_offset << ", " << begin_offset
+              << ") to [" << dst_offset << ", " << processed << ")";
+          VLOG(kLogLevel) << "src_offset: " << src_offset
+              << " dst_offset: " << dst_offset;
+          VLOG(kLogLevel) << logmsg;
+        }
 
         // Copy the memory chunks.  By using cutoffs, it is guaranteed that
         // in each copy, [offset, offset + len) is a valid region, i.e., do not
@@ -647,6 +698,12 @@ void MultiTierStorage::run_gc(int thread_id) {
             this_dst -= mem_buf_size_;
           }
           int64_t this_len = cutoffs[i + 1] - cutoffs[i];
+          if (cutoffs.size() > 2) {
+            LOG(INFO) << "memmove [" << this_src << ", "
+                << (this_src + this_len) % mem_buf_size_ << ") to ["
+                << this_dst << ", " << (this_dst + this_len) % mem_buf_size_
+                << ")";
+          }
           memmove(ptr + this_dst, ptr + this_src, this_len);
         }
 
@@ -666,30 +723,45 @@ void MultiTierStorage::run_gc(int thread_id) {
       membuf.gc_begin_offset = begin_offset;
 
       // Release the lock so that other threads get a chance to enter.
-      pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
-      int rc = pthread_yield();
-      if (rc) {
-        LOG(ERROR) << "pthread_yield() failed on thread " << thread_id
-          << " with rc " << rc << ".";
+      LOG(INFO) << "GC: yield.";
+      pthread_mutex_unlock(&mutex_[sid]);
+
+      timespec time_for_sleep;
+      time_for_sleep.tv_sec = 0;
+      time_for_sleep.tv_nsec = 100000;  // 0.0001 sec.
+
+      int rc = 0;
+      if (rc = nanosleep(&time_for_sleep, NULL) < 0) {
+        LOG(ERROR) << "nanosleep() failed on thread " << thread_id
+            << " with rc " << rc << ".";
       }
 
       // Re-aquire the lock before proceeding to another area.
-      pthread_mutex_lock(&mutex_[my_streams[stream_idx]]);
+      pthread_mutex_lock(&mutex_[sid]);
+      LOG(INFO) << "GC: I'm back.";
       
       // If the GC table area is corrupted, abort this GC pass.
       if (membuf.gc_table_begin_offset == -1) {
+        LOG(INFO) << "Abort GC since the GC table area is corrupted.";
         break;
       }
 
       // If the begin offset of GC is corrupted, update to current begin_offset.
       if (membuf.gc_begin_offset == -1) {
+        LOG(INFO) << "Update gc_begin_offset to " << membuf.begin_offset
+            << " since the buffer before this offset has been flushed to disk.";
         begin_offset = membuf.gc_begin_offset = membuf.begin_offset;
         begin_seq = get_begin_seq(ptr + begin_offset);
       }
     }
 
-//    report_state(my_streams[stream_idx]);
+    report_state(sid);
 
-    pthread_mutex_unlock(&mutex_[my_streams[stream_idx]]);
+    pthread_mutex_unlock(&mutex_[sid]);
+
+    if (++stream_idx == my_streams.size()) {
+      stream_idx = 0;
+      // TODO(haoyan): sleep for a while?
+    }
   }
 }
