@@ -394,8 +394,8 @@ void MultiTierStorage::flush_to_disk(int sid) {
     end_offset -= mem_buf_size_;
   }
 
-  LOG(INFO) << "FLUSH " << sid << " [" << membuf.begin_offset
-      << ", " << membuf.end_offset << ")";
+  LOG(INFO) << "FLUSH " << sid << " [" << begin_offset
+      << ", " << end_offset << ")";
 
   uint8_t *ptr = membuf.chunk;
   int unit_size = sizeof(uint8_t);
@@ -513,7 +513,7 @@ void MultiTierStorage::run_gc(int thread_id) {
       int64_t key = get_object_id(ptr + i);
       gc_info.table.insert(key);
     }
-    LOG(INFO) << "New GC pass on stream " << sid
+    LOG(INFO) << "GC started on stream " << sid
         << ": (" << membuf.begin_offset << ", " << gc_table_begin_offset
         << ", " << gc_table_end_offset << ") with " << gc_info.table.size()
         << " distinct events in GC table.";
@@ -541,8 +541,8 @@ void MultiTierStorage::run_gc(int thread_id) {
         pause_offset = end_offset;
       }
 
-      VLOG(kLogLevel) << "Starting GC on stream " << sid
-          << ": [" << begin_offset << ", " << pause_offset << ")";
+      VLOG(kLogLevel) << "GC processing stream " << sid
+          << ", [" << begin_offset << ", " << pause_offset << ")";
 
       // b) In buffer [begin_offset, pause_offset), scan for events should be
       // GCed, and turn them into (singleton) tombstones.
@@ -703,6 +703,9 @@ void MultiTierStorage::run_gc(int thread_id) {
         begin_seq = get_begin_seq(ptr + begin_offset);
       }
     }
+
+    LOG(INFO) << "GC finished on stream " << sid
+        << ". New begin_offset is " << membuf.begin_offset << ".";
 
     report_state(sid);
 
