@@ -33,7 +33,6 @@ int64_t MultiTierStorage::put_raw_events(
   MemBuffer &membuf = mem_store_[sid];
   VLOG(kLogLevel) << "put_raw_events: stream " << sid << "; " << nevents
       << " events, staring " << membuf.end_seq << ".";
-  CHECK_EQ(membuf.end_seq, membuf.prev_end_seq);
   if (nevents == 0) {
     LOG(WARNING) << "put_raw_events invoked with 0 events";
     return membuf.end_seq;
@@ -60,23 +59,6 @@ int64_t MultiTierStorage::put_raw_events(
   for (int i = 0; i < nevents; ++i) {
     itos(ptr + end_offset + 1, membuf.end_seq, 8);
     memmove(ptr + end_offset + 9, data + i * kRawEventLen, kRawEventLen);
-    int64_t end1 = get_end_seq(ptr + prev_offset(end_offset));
-    int64_t begin1 = get_begin_seq(ptr + end_offset);
-
-    if (end_offset != membuf.begin_offset &&
-        end1 != begin1) {
-      debug_show_memory(ptr + prev_offset(prev_offset(end_offset)), kEventLen * 2, 1);
-      debug_show_memory(ptr + end_offset, kEventLen * 2, 1);
-      LOG(FATAL) << "Black hole detected at event " << i << "\n"
-          << "CHECK: " << end1 << " " << begin1 << "\n"
-          << " " << membuf.end_seq << ": "
-          << end_offset << " " << int(*(ptr + prev_offset(end_offset))) << " "
-          << int(*(ptr + end_offset)) << " ["
-          << get_begin_seq(ptr + prev_offset(end_offset)) << ", "
-          << get_end_seq(ptr + prev_offset(end_offset)) << "), ["
-          << get_begin_seq(ptr + end_offset)
-          << ", " << get_end_seq(ptr + end_offset) << ")";
-    }
     end_offset = next_offset(end_offset);
     ++membuf.end_seq;
   }
@@ -85,7 +67,6 @@ int64_t MultiTierStorage::put_raw_events(
 
   // Finally, set the new end_offset, empty flag, and update the counter.
   membuf.end_offset = end_offset;
-  membuf.prev_end_seq = membuf.end_seq;
   membuf.is_empty = false;
   membuf.bytes_wrote += nevents * kEventLen;
 
@@ -570,17 +551,6 @@ void MultiTierStorage::run_gc(int thread_id) {
         if (is_data_event(ptr + cursor) &&
             gc_info.table.count(get_object_id(ptr + cursor)) == 1) {
           to_tombstone(ptr + cursor);
-          if (next_offset(cursor) != pause_offset &&
-              get_end_seq(ptr + cursor) !=
-                get_begin_seq(ptr + next_offset(cursor))) {
-            LOG(FATAL) << "Black hole detected: "
-                << cursor << " " << int(*(ptr + cursor)) << " "
-                << int(*(ptr + next_offset(cursor)))
-                << " [" << get_begin_seq(ptr + cursor)
-                << ", " << get_end_seq(ptr + cursor) << "), ["
-                << get_begin_seq(ptr + next_offset(cursor)) << ", "
-                << get_end_seq(ptr + next_offset(cursor)) << ")";
-          }
         }
 
         cursor = next_offset(cursor);
@@ -598,11 +568,7 @@ void MultiTierStorage::run_gc(int thread_id) {
       int64_t lo = 0;
       while (cursor != begin_offset) {
         cursor = prev_offset(cursor);
-//        VLOG(kLogLevel) << "Event# -- cursor: " << cursor / kEventLen
-//            << "; processed: " << processed / kEventLen
-//            << "; lo: " << lo << "; current_gc: " << current_gc;
         if (is_data_event(ptr + cursor)) {
-//          VLOG(kLogLevel) << "Data event #" << get_begin_seq(ptr + cursor);
           // For data events, move them rightwards if necessary.
           processed = prev_offset(processed);
           if (cursor != processed) {
@@ -610,8 +576,6 @@ void MultiTierStorage::run_gc(int thread_id) {
           }
           current_gc = false;
         } else {
-//          VLOG(kLogLevel) << "Tombstone event [" << get_begin_seq(ptr + cursor)
-//              << ", " << get_end_seq(ptr + cursor);
           // For GCed events, set a mark if this is the first one in a series,
           // otherwise, update the mark.
           if (!current_gc) {
@@ -673,18 +637,6 @@ void MultiTierStorage::run_gc(int thread_id) {
         auto last = std::unique(cutoffs.begin(), cutoffs.end());
         cutoffs.erase(last, cutoffs.end());
 
-        if (cutoffs.size() > 2) {
-          std::string logmsg = "Cutoffs:";
-          for (int i = 0; i < cutoffs.size(); ++i) {
-            logmsg += " " + std::to_string(cutoffs[i]);
-          }
-          VLOG(kLogLevel) << "Moving [" << src_offset << ", " << begin_offset
-              << ") to [" << dst_offset << ", " << processed << ")";
-          VLOG(kLogLevel) << "src_offset: " << src_offset
-              << " dst_offset: " << dst_offset;
-          VLOG(kLogLevel) << logmsg;
-        }
-
         // Copy the memory chunks.  By using cutoffs, it is guaranteed that
         // in each copy, [offset, offset + len) is a valid region, i.e., do not
         // pass through offset mem_buf_size_.
@@ -698,12 +650,7 @@ void MultiTierStorage::run_gc(int thread_id) {
             this_dst -= mem_buf_size_;
           }
           int64_t this_len = cutoffs[i + 1] - cutoffs[i];
-          if (cutoffs.size() > 2) {
-            LOG(INFO) << "memmove [" << this_src << ", "
-                << (this_src + this_len) % mem_buf_size_ << ") to ["
-                << this_dst << ", " << (this_dst + this_len) % mem_buf_size_
-                << ")";
-          }
+
           memmove(ptr + this_dst, ptr + this_src, this_len);
         }
 
@@ -723,12 +670,12 @@ void MultiTierStorage::run_gc(int thread_id) {
       membuf.gc_begin_offset = begin_offset;
 
       // Release the lock so that other threads get a chance to enter.
-      LOG(INFO) << "GC: yield.";
+      VLOG(kLogLevel) << "GC: yield.";
       pthread_mutex_unlock(&mutex_[sid]);
 
       timespec time_for_sleep;
       time_for_sleep.tv_sec = 0;
-      time_for_sleep.tv_nsec = 100000;  // 0.0001 sec.
+      time_for_sleep.tv_nsec = 1000000;  // 0.001 sec.
 
       int rc = 0;
       if (rc = nanosleep(&time_for_sleep, NULL) < 0) {
@@ -738,17 +685,19 @@ void MultiTierStorage::run_gc(int thread_id) {
 
       // Re-aquire the lock before proceeding to another area.
       pthread_mutex_lock(&mutex_[sid]);
-      LOG(INFO) << "GC: I'm back.";
+      VLOG(kLogLevel) << "GC: I'm back.";
       
       // If the GC table area is corrupted, abort this GC pass.
       if (membuf.gc_table_begin_offset == -1) {
-        LOG(INFO) << "Abort GC since the GC table area is corrupted.";
+        // Log as WARNING here since this is really unlikely.
+        // Take a deeper look at it if encountered.
+        LOG(WARNING) << "Abort GC since the GC table area is corrupted.";
         break;
       }
 
       // If the begin offset of GC is corrupted, update to current begin_offset.
       if (membuf.gc_begin_offset == -1) {
-        LOG(INFO) << "Update gc_begin_offset to " << membuf.begin_offset
+        VLOG(kLogLevel) << "Update gc_begin_offset to " << membuf.begin_offset
             << " since the buffer before this offset has been flushed to disk.";
         begin_offset = membuf.gc_begin_offset = membuf.begin_offset;
         begin_seq = get_begin_seq(ptr + begin_offset);

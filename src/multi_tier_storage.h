@@ -87,7 +87,6 @@ class MultiTierStorage {
   struct MemBuffer {
     int64_t begin_seq, end_seq;
     int64_t begin_offset, end_offset;
-    int64_t prev_end_seq; // For debugging: end_seq after last put_raw.
     int64_t gc_begin_offset;
     int64_t gc_table_begin_offset, gc_table_end_offset;
     bool is_empty;
@@ -98,7 +97,7 @@ class MultiTierStorage {
     int64_t bytes_saved;
 
     MemBuffer() {
-      begin_seq = end_seq = prev_end_seq = 1;
+      begin_seq = end_seq = 1;
       begin_offset = end_offset = 0;
       gc_begin_offset = -1;
       gc_table_begin_offset = gc_table_end_offset = -1;
