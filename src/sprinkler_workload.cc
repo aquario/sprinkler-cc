@@ -6,6 +6,8 @@
 
 #include <string>
 
+#include <glog/logging.h>
+
 #include "sprinkler_common.h"
 
 FILE *SprinklerWorkload::fin;
@@ -27,6 +29,9 @@ int64_t SprinklerWorkload::get_next_key(int64_t limit) {
 void SprinklerWorkload::init_workload(int chunk_id) {
   std::string filename = "workload-" + std::to_string(chunk_id);
   fin = fopen(filename.c_str(), "rb");
+
+  // Terminate the client if workload file does not exist.
+  CHECK(fin != NULL) << "Workload file cannot be opened.";
 }
 
 void SprinklerWorkload::close_workload() {
