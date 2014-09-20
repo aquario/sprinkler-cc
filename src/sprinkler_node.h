@@ -141,10 +141,16 @@ class SprinklerNode {
   // Add events published from peer proxies.
   void handle_proxy_publish(const uint8_t *data);
 
-  // Client publishes events to its local proxy.
+  // Prepare a publishing message to be sent to the local proxy.
+  // Returns the length of the message constructed.
+  //
   // Message format:
   //  |kCliPubMsg(1)|cid(2)|sid(1)|nevents(8)|msg0(*)|msg1(*)|...|msgn(*)|
-  void client_publish(int batch_size);
+  int prepare_client_publish(uint8_t *msg, int batch_size);
+
+  // Client publishes events to its local proxy.
+  // Returns true if the message is sent successfully.
+  bool client_publish(uint8_t *msg, int len);
 
   // Add events published from local clients.
   void handle_client_publish(const uint8_t *data);
