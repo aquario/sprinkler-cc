@@ -468,9 +468,7 @@ void MultiTierStorage::run_gc(int thread_id) {
     GcInfo &gc_info = metadata[sid];
     
     // Skip GC if there are too few events.
-    int64_t total_events =
-        distance(membuf.begin_offset, membuf.end_offset) / kEventLen;
-    if (total_events < min_events_to_gc_) {
+    if (get_used_space(membuf) < min_gc_pass_) {
       continue;
     }
 
@@ -529,6 +527,16 @@ void MultiTierStorage::run_gc(int thread_id) {
     int64_t begin_seq = membuf.begin_seq;
     int64_t begin_offset = membuf.begin_offset;
     int64_t end_offset = gc_table_begin_offset;
+
+    if (distance(begin_offset, end_offset) > max_gc_pass_) {
+      begin_offset += distance(begin_offset, end_offset) - max_gc_pass_;
+      if (begin_offset >= mem_buf_size_) {
+        begin_offset -= mem_buf_size_;
+      }
+      begin_seq = get_begin_seq(ptr + begin_offset);
+      LOG(INFO) << "GC begin_offset is set to " << begin_offset;
+    }
+
     while (begin_offset != end_offset) {
       // a) Determine where to take a breathe.
       int64_t pause_offset = end_offset;

@@ -21,13 +21,14 @@
 class MultiTierStorage {
  public:
   MultiTierStorage(int nstreams, int64_t mem_buf_size, int64_t disk_chunk_size,
-      int gc_thread_count, int64_t min_events_to_gc,
+      int gc_thread_count, int64_t min_gc_pass, int64_t max_gc_pass,
       int64_t max_gc_table_size, int64_t max_gc_chunk_size)
     : nstreams_(nstreams),
       mutex_(nstreams), next_chunk_no_(nstreams, 0), used_chunk_no_(nstreams),
       max_gc_table_size_(max_gc_table_size),
+      min_gc_pass_(min_gc_pass), max_gc_pass_(max_gc_pass),
       max_gc_chunk_size_(max_gc_chunk_size),
-      gc_thread_count_(gc_thread_count), min_events_to_gc_(min_events_to_gc),
+      gc_thread_count_(gc_thread_count),
       gc_threads_(gc_thread_count), gc_hints_(gc_thread_count) {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
@@ -197,10 +198,12 @@ class MultiTierStorage {
 
   // Maximum #events in the hash table used to match previous events.
   int64_t max_gc_table_size_;
+  // Min bytes in a stream to trigger GC.
+  int64_t min_gc_pass_;
+  // Maximum bytes to be GCed per pass.
+  int64_t max_gc_pass_;
   // Maximum buffer size to be GCed before pausing, in bytes.
   int64_t max_gc_chunk_size_;
-  // Min #events in a stream to trigger GC.
-  int64_t min_events_to_gc_;
   // #GC threads.
   int gc_thread_count_;
   // Pointers to garbage collection threads.
