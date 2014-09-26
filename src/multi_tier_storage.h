@@ -14,6 +14,13 @@
 
 #include "dmalloc.h"
 
+// Information about a chunk on disk.
+struct ChunkInfo {
+  std::string filename;
+  int64_t begin_seq;
+  int64_t end_seq;
+};
+
 // Stores events received by a Sprinkler node.  An in-memory buffer stores most
 // recent events from every stream registered with the system, and an on-disk
 // permanent storage unit keeps all the history for streams that should be kept
@@ -24,7 +31,7 @@ class MultiTierStorage {
       int gc_thread_count, int64_t min_gc_pass, int64_t max_gc_pass,
       int64_t max_gc_table_size, int64_t max_gc_chunk_size)
     : nstreams_(nstreams),
-      mutex_(nstreams), next_chunk_no_(nstreams, 0), used_chunk_no_(nstreams),
+      mutex_(nstreams), next_chunk_no_(nstreams, 0), chunk_summary_(nstreams),
       max_gc_table_size_(max_gc_table_size),
       min_gc_pass_(min_gc_pass), max_gc_pass_(max_gc_pass),
       max_gc_chunk_size_(max_gc_chunk_size),
@@ -215,8 +222,8 @@ class MultiTierStorage {
   static int64_t disk_chunk_size_;
   // Next chunk# to assign for each stream stored on disk.
   std::vector<int64_t> next_chunk_no_;
-  // Filenames for streams stored on this node.
-  std::vector< std::deque<int64_t> > used_chunk_no_;
+  // Filenames and start/end seq# for streams stored on this node.
+  std::vector< std::deque<ChunkInfo> > chunk_summary_;
 };
 
 #endif  // MULTI_TIER_STORAGE_H_

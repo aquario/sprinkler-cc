@@ -401,8 +401,15 @@ void MultiTierStorage::flush_to_disk(int sid) {
   int unit_size = sizeof(uint8_t);
 
   std::string filename = get_chunk_name(sid, next_chunk_no_[sid]);
-  FILE *fout = fopen(filename.c_str(), "wb");
 
+  ChunkInfo chunk_info;
+  chunk_info.filename = filename;
+  chunk_info.begin_seq = membuf.begin_seq;
+  chunk_info.end_seq = get_end_seq(ptr + prev_offset(end_offset));
+  chunk_summary_[sid].push_back(chunk_info);
+  ++next_chunk_no_[sid];
+
+  FILE *fout = fopen(filename.c_str(), "wb");
   if (begin_offset < end_offset) {
     // No carry-over, a single write is sufficient.
     fwrite(ptr + begin_offset, unit_size, disk_chunk_size_, fout);
@@ -412,12 +419,11 @@ void MultiTierStorage::flush_to_disk(int sid) {
     fwrite(ptr, unit_size,
         disk_chunk_size_ - (mem_buf_size_ - begin_offset), fout);
   }
+  fclose(fout);
+
+  // Update new begin_{seq, offset}.
   membuf.begin_seq = get_begin_seq(ptr + end_offset);
   membuf.begin_offset = end_offset;
-
-  fclose(fout);
-  used_chunk_no_[sid].push_back(next_chunk_no_[sid]);
-  ++next_chunk_no_[sid];
 
   // Invalidate on-going GC activity if there is interference.
   if (in_between(begin_offset, end_offset, membuf.gc_begin_offset)) {
