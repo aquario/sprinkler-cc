@@ -341,7 +341,7 @@ void SprinklerNode::proxy_publish() {
       *(msg + 2) = static_cast<uint8_t>(sid);
 
       int64_t nevents =
-          storage_.get_events(sid, next_seq, kMaxEventsPerMsg, msg + 11);
+          storage_.get_events(pid, sid, next_seq, kMaxEventsPerMsg, msg + 11);
       if (nevents < 0) {
         LOG(WARNING) << "Failed to get events: error code " << nevents;
       } else {

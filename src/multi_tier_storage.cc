@@ -186,11 +186,10 @@ int64_t MultiTierStorage::put_events(
 }
 
 int64_t MultiTierStorage::get_events(
-    int sid, int64_t first_seq, int64_t max_events, uint8_t *buffer) {
-  pthread_mutex_lock(&mutex_[sid]);
-
+    int pid, int sid, int64_t first_seq, int64_t max_events, uint8_t *buffer) {
   MemBuffer &membuf = mem_store_[sid];
-  VLOG(kLogLevel) << "get_events: stream " << sid << "; starting at "
+  VLOG(kLogLevel) << "get_events for proxy " << pid
+      << " on stream " << sid << "; starting at "
       << first_seq << "; at most " << max_events << " events are needed;"
       << " begin_offset is " << membuf.begin_offset
       << " begin_seq is " << membuf.begin_seq;
@@ -201,17 +200,52 @@ int64_t MultiTierStorage::get_events(
     return kErrFuture;
   }
 
-  // first_seq is not in memory.
-  if (first_seq < membuf.begin_seq) {
-    // TODO(haoyan): Fetch events from disk.
-    LOG(WARNING) << "Data not found in memory.";
-    LOG(WARNING) << "get_events on stream " << sid << ": asking for "
-        << first_seq << ", begin_seq is " << membuf.begin_seq;
+  PublishBuffer &pubbuf = publish_buffer_[pid][sid];
+  if (pubbuf.remainder > 0 &&
+      in_range(pubbuf.buffer + pubbuf.offset, first_seq)) {
+    // Reuested events matches publish buffer, extract from the buffer directly.
+    // No need for locking since we are reading from the PublishBuffer,
+    // not the main memory buffer.
+    int64_t nevents = pubbuf.remainder / kEventLen;
+    if (nevents > max_events) {
+      nevents = max_events;
+    }
+    memmove(buffer, pubbuf.buffer + pubbuf.offset, nevents * kEventLen);
+    pubbuf.offset += nevents * kEventLen;
+    pubbuf.remainder -= nevents * kEventLen;
 
-    pthread_mutex_unlock(&mutex_[sid]);
-    return kErrPast;
+    return nevents;
+  } else if (first_seq < membuf.begin_seq) {
+    // first_seq is not in memory.
+    // Load the chunk that contains the seq# into publish buffer.
+    int64_t chunk_id = get_chunk_id_by_seq(sid, first_seq);
+    // We know that this seq# is on disk for sure ...
+    CHECK_NE(chunk_id, -1);
+    std::string filename = get_chunk_name(sid, chunk_id);
+    FILE *fin = fopen(filename.c_str(), "r");
+    int64_t rc = fread(pubbuf.buffer, disk_chunk_size_, 1, fin);
+    CHECK_EQ(rc, 1);
+    fclose(fin);
+
+    VLOG(kLogLevel) << "Loaded chunk " << chunk_id << " into publish buffer.";
+
+    pubbuf.offset = adjust_offset_linear(
+        first_seq, disk_chunk_size_ / kEventLen, pubbuf.buffer);
+    pubbuf.remainder = disk_chunk_size_ - pubbuf.offset;
+
+    int64_t nevents = pubbuf.remainder / kEventLen;
+    if (nevents > max_events) {
+      nevents = max_events;
+    }
+    memmove(buffer, pubbuf.buffer + pubbuf.offset, nevents * kEventLen);
+    pubbuf.offset += nevents * kEventLen;
+    pubbuf.remainder -= nevents * kEventLen;
+
+    return nevents;
   } else {
-    // Everything wanted is in-memory.
+    // If nothing is left in the publish buffer, we have to fetch events from
+    // the main in-memory buffer.
+    pthread_mutex_lock(&mutex_[sid]);
     // First, determine the memory range needs to copy.
     int64_t begin_offset = adjust_offset_circular(first_seq,
         membuf.begin_offset, membuf.end_offset,
@@ -219,34 +253,44 @@ int64_t MultiTierStorage::get_events(
     // If it gets -1, it has to be an error ...
     CHECK_GT(begin_offset, -1);
     int64_t end_offset = membuf.end_offset;
-    int64_t nevents = (end_offset > begin_offset
-        ? (end_offset - begin_offset) / kEventLen
-        : (mem_buf_size_ - (begin_offset - end_offset)) / kEventLen);
-    if (nevents > max_events) {
-      nevents = max_events;
-      end_offset = begin_offset + nevents * kEventLen;
-      if (end_offset >= mem_buf_size_) {
-        end_offset -= mem_buf_size_;
-      }
-    }
 
-    VLOG(kLogLevel) << "Copy memory in [" << begin_offset << ", " << end_offset
-        << ") for " << nevents << " events.";
+    // First, load as much as a chunk of memory into publish buffer
+    // for batched sends.
+    int64_t len = distance(begin_offset, end_offset);
+    if (len >= disk_chunk_size_) {
+      len = disk_chunk_size_;
+    } 
 
-    // Next, copy events into buffer.
-    if (end_offset > begin_offset) {
-      memmove(buffer, membuf.chunk + begin_offset,
-          end_offset - begin_offset);
+    if (begin_offset + len <= mem_buf_size_) {
+      memmove(pubbuf.buffer, membuf.chunk + begin_offset, len);
     } else {
-      memmove(buffer, membuf.chunk + begin_offset,
+      memmove(pubbuf.buffer, membuf.chunk + begin_offset,
           mem_buf_size_ - begin_offset);
-      memmove(buffer + (mem_buf_size_ - begin_offset),
-          membuf.chunk, end_offset);
+      memmove(pubbuf.buffer + (mem_buf_size_ - begin_offset), membuf.chunk,
+          len - (mem_buf_size_ - begin_offset));
     }
+
+    VLOG(kLogLevel) << "Loaded " << len << " bytes from " << begin_offset
+        << " into publish buffer.";
+
+    // Unlock the mutex.  No further code in this method touches the in-memory
+    // buffer anymore.
     pthread_mutex_unlock(&mutex_[sid]);
+
+    int64_t nevents = len / kEventLen > max_events
+        ? max_events
+        : len / kEventLen;
 
     // nevents == 0 indicates an error behavior and should've been caught above.
     CHECK_NE(nevents, 0);
+
+    // Next, copy events into buffer.
+    memmove(buffer, pubbuf.buffer, nevents * kEventLen);
+
+    // Finally, update offset/remainder.
+    pubbuf.offset = nevents * kEventLen;
+    pubbuf.remainder = len - pubbuf.offset;
+
     return nevents;
   }
 }
@@ -377,6 +421,25 @@ int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
     if (get_begin_seq(chunk + idx) > seq) {
       hi = mid - 1;
     } else if (get_end_seq(chunk + idx) <= seq) {
+      lo = mid + 1;
+    }
+  }
+  return -1;
+}
+
+int MultiTierStorage::get_chunk_id_by_seq(int sid, int64_t seq) {
+  int lo = 0;
+  int hi = chunk_summary_[sid].size() - 1;
+
+  while (lo <= hi) {
+    int mid = (lo + hi) >> 1;
+    if (chunk_summary_[sid][mid].begin_seq <= seq &&
+        seq < chunk_summary_[sid][mid].end_seq) {
+      return mid;
+    }
+    if (chunk_summary_[sid][mid].begin_seq > seq) {
+      hi = mid - 1;
+    } else if (chunk_summary_[sid][mid].end_seq <= seq) {
       lo = mid + 1;
     }
   }

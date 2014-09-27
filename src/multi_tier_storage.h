@@ -54,6 +54,12 @@ class MultiTierStorage {
       }
     }
 
+    // Init publish buffers.
+    publish_buffer_ = std::vector< std::vector<PublishBuffer> >(nstreams);
+    for (int i = 0; i < nstreams; ++i) {
+      publish_buffer_[i].push_back(PublishBuffer());
+    }
+
     // Initialize garbage collection.
     init_gc();
   }
@@ -71,7 +77,7 @@ class MultiTierStorage {
   // Retrieve events from a stream.
   // Return #events fetched into buffer; or a negative value indicating a type
   // of error.  See error code constants for error types.
-  int64_t get_events(int sid, int64_t first_seq, int64_t max_events,
+  int64_t get_events(int pid, int sid, int64_t first_seq, int64_t max_events,
       uint8_t *buffer);
 
   // Report the state of all streams/a stream: total events added, bytes wrote,
@@ -117,6 +123,20 @@ class MultiTierStorage {
 
     ~MemBuffer() {
       dfree(chunk);
+    }
+  };
+
+  // Buffers events to be send in a single, continuous stream.
+  struct PublishBuffer {
+    int64_t offset, remainder;
+    uint8_t *buffer;
+
+    PublishBuffer() {
+      buffer = static_cast<uint8_t *>(dcalloc(disk_chunk_size_, 1));
+    }
+
+    ~PublishBuffer() {
+      dfree(buffer);
     }
   };
 
@@ -169,6 +189,9 @@ class MultiTierStorage {
   int64_t adjust_offset_circular(int64_t seq,
       int64_t begin, int64_t end, const uint8_t *chunk);
 
+  // Returns the id of on-disk chunk that contains seq in stream sid.
+  int get_chunk_id_by_seq(int sid, int64_t seq);
+
   // Flush a chunk of in-memory buffer to disk.
   void flush_to_disk(int sid);
 
@@ -202,6 +225,8 @@ class MultiTierStorage {
   std::vector<MemBuffer> mem_store_;
   // Mutex for each stream.
   std::vector<pthread_mutex_t> mutex_;
+  // Buffer to batch publishing on a continuous stream.
+  std::vector< std::vector<PublishBuffer> > publish_buffer_;
 
   // Maximum #events in the hash table used to match previous events.
   int64_t max_gc_table_size_;
