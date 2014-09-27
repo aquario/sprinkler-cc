@@ -444,6 +444,7 @@ void TransportLayer::register_peer(const std::string &host, int port) {
   }
 
   std::string endpoint = get_endpoint(host, port);
+  LOG(INFO) << "Registering endpoint " << endpoint;
 
   // See if this address is already in the list.
   if (addr_list_.find(endpoint) != addr_list_.end()) {

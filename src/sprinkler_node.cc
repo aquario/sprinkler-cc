@@ -86,6 +86,8 @@ void SprinklerNode::start_client(
       if (msg == NULL) {
         msg = static_cast<uint8_t *>(dcalloc(TransportLayer::kMaxChunkSize, 1));
         len = prepare_client_publish(msg, batch_size);
+      } else {
+        VLOG(kLogLevel) << "Retry last message.";
       }
 
       // If succeeded, set msg to NULL so that new events will be fetched
@@ -284,7 +286,7 @@ void SprinklerNode::handle_subscription(const uint8_t *data) {
   int64_t next_seq = static_cast<int64_t>(stoi(data + 3, 8));
 
   LOG(INFO) << "handle_subscription from proxy " << pid << " on stream "
-      << sid << " starting seq# " << next_seq;
+      << static_cast<int>(sid) << " starting seq# " << next_seq;
 
   if (demands_[sid].count(pid)) {
     // If the subscription already exists, update with next_seq if it is larger.
@@ -432,7 +434,6 @@ bool SprinklerNode::client_publish(uint8_t *msg, int len) {
 void SprinklerNode::handle_client_publish(const uint8_t *data) {
   int cid = static_cast<int>(stoi(data + 1, 2));
   int sid = static_cast<int>(*(data + 3));
-  VLOG(kLogLevel) << "client_publish: client " << cid << " to stream " << sid;
   CHECK(local_streams_.count(sid));   // Only accept if the sid is local.
   int64_t nevents = static_cast<int64_t>(stoi(data + 4, 8));
 

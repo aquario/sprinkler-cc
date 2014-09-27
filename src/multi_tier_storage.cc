@@ -44,6 +44,7 @@ int64_t MultiTierStorage::put_raw_events(
     flush_to_disk(sid);
   }
 
+  LOG(INFO) << "DEBUG 2";
   uint8_t *ptr = membuf.chunk;
 
   // First, reset the memory region.
@@ -54,6 +55,7 @@ int64_t MultiTierStorage::put_raw_events(
     memset(ptr + end_offset, 0, mem_buf_size_ - end_offset);
     memset(ptr, 0, nevents * kEventLen - (mem_buf_size_ - end_offset));
   }
+  LOG(INFO) << "DEBUG 3";
 
   // Next, format events with seq#'s.
   for (int i = 0; i < nevents; ++i) {
@@ -63,7 +65,8 @@ int64_t MultiTierStorage::put_raw_events(
     ++membuf.end_seq;
   }
 
-  LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
+//  LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
+  LOG(INFO) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
   // Finally, set the new end_offset, empty flag, and update the counter.
   membuf.end_offset = end_offset;
@@ -203,6 +206,7 @@ int64_t MultiTierStorage::get_events(
   PublishBuffer &pubbuf = publish_buffer_[pid][sid];
   if (pubbuf.remainder > 0 &&
       in_range(pubbuf.buffer + pubbuf.offset, first_seq)) {
+    VLOG(kLogLevel) << "Requested seq# " << first_seq << " is in pubbuf.";
     // Reuested events matches publish buffer, extract from the buffer directly.
     // No need for locking since we are reading from the PublishBuffer,
     // not the main memory buffer.
@@ -216,6 +220,7 @@ int64_t MultiTierStorage::get_events(
 
     return nevents;
   } else if (first_seq < membuf.begin_seq) {
+    VLOG(kLogLevel) << "Requested seq# " << first_seq << " is on disk.";
     // first_seq is not in memory.
     // Load the chunk that contains the seq# into publish buffer.
     int64_t chunk_id = get_chunk_id_by_seq(sid, first_seq);
@@ -243,6 +248,8 @@ int64_t MultiTierStorage::get_events(
 
     return nevents;
   } else {
+    VLOG(kLogLevel) << "Requested seq# " << first_seq
+        << " is in memory, but not in the pubbuf.";
     // If nothing is left in the publish buffer, we have to fetch events from
     // the main in-memory buffer.
     pthread_mutex_lock(&mutex_[sid]);
@@ -260,6 +267,12 @@ int64_t MultiTierStorage::get_events(
     if (len >= disk_chunk_size_) {
       len = disk_chunk_size_;
     } 
+    VLOG(kLogLevel) << "In-memory buffer: [" << membuf.begin_offset << ", "
+        << membuf.end_offset << ")";
+    VLOG(kLogLevel) << "pubbuf: " << pubbuf.offset << " " << pubbuf.remainder
+        << " " << (uint64_t) pubbuf.buffer;
+    VLOG(kLogLevel) << "Memmove: " << begin_offset << " " << len << " "
+        << mem_buf_size_;
 
     if (begin_offset + len <= mem_buf_size_) {
       memmove(pubbuf.buffer, membuf.chunk + begin_offset, len);
@@ -501,7 +514,9 @@ void MultiTierStorage::flush_to_disk(int sid) {
       << " gc_begin_offset " << membuf.gc_begin_offset
       << " gc_table_begin_offset " << membuf.gc_table_begin_offset;
 
+  LOG(INFO) << "DEBUG 0";
   pthread_mutex_unlock(&mutex_[sid]);
+  LOG(INFO) << "DEBUG 1";
 }
 
 std::string MultiTierStorage::get_chunk_name(int sid, int64_t chunk_id) {

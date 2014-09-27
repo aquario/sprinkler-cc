@@ -27,7 +27,8 @@ struct ChunkInfo {
 // at this node.
 class MultiTierStorage {
  public:
-  MultiTierStorage(int nstreams, int64_t mem_buf_size, int64_t disk_chunk_size,
+  MultiTierStorage(int nproxies, int nstreams,
+      int64_t mem_buf_size, int64_t disk_chunk_size,
       int gc_thread_count, int64_t min_gc_pass, int64_t max_gc_pass,
       int64_t max_gc_table_size, int64_t max_gc_chunk_size)
     : nstreams_(nstreams),
@@ -57,7 +58,7 @@ class MultiTierStorage {
     // Init publish buffers.
     publish_buffer_ = std::vector< std::vector<PublishBuffer> >(nstreams);
     for (int i = 0; i < nstreams; ++i) {
-      publish_buffer_[i].push_back(PublishBuffer());
+      publish_buffer_[i] = std::vector<PublishBuffer>(nproxies);
     }
 
     // Initialize garbage collection.
@@ -132,6 +133,8 @@ class MultiTierStorage {
     uint8_t *buffer;
 
     PublishBuffer() {
+      offset = remainder = 0;
+      LOG(INFO) << "disk_chunk_size_: " << disk_chunk_size_;
       buffer = static_cast<uint8_t *>(dcalloc(disk_chunk_size_, 1));
     }
 
