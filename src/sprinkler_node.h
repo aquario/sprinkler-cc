@@ -186,9 +186,6 @@ class SprinklerNode {
   // Max #events per message.
   static const int kMaxEventsPerMsg =
       (TransportLayer::kMaxChunkSize - kMaxHeaderSize) / kEventLen;
-  // Max #unformatted events per message.
-  static const int kMaxRawEventsPerMsg =
-      (TransportLayer::kMaxChunkSize - kMaxHeaderSize) / kRawEventLen;
 
   // Node ID; unique across a deployment.
   int id_;

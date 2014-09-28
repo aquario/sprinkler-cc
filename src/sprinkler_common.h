@@ -9,11 +9,9 @@
 // Format of a GC-by-key event: same as above.
 // Format of a Tombstone event:
 //   |1(1)|start-seq#(8)|end-seq#(8)|empty(15)|
+// Format of an unformatted event from clients:
+//   |0(9)|obj-id(8)|other-payload(15)|
 const int64_t kEventLen = 32;
-// Length of an unformatted event sent by Sprinkler clients.
-// Format of a raw event:
-//   |obj-id(8)|other-payload(8)|
-const int64_t kRawEventLen = 16;
 
 // Conversion between uint64_t and byte array.
 void itos(uint8_t *dst, uint64_t val, int len);

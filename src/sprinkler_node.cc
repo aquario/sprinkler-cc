@@ -57,7 +57,7 @@ void SprinklerNode::start_client(
   // This node must be a client. 
   CHECK_EQ(role_, 0); 
   // Batch size must not exceed the maximum allowed.
-  CHECK_LE(batch_size, kMaxRawEventsPerMsg);
+  CHECK_LE(batch_size, kMaxEventsPerMsg);
   // Convert duration to microseconds.
   duration *= 1000000;
 
@@ -419,7 +419,7 @@ void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
 int SprinklerNode::prepare_client_publish(uint8_t *msg, int batch_size) {
   VLOG(kLogLevel) << "prepare_client_publish: client_id = " << id_
       << " on stream " << client_sid_ << " with " << batch_size << " events";
-  int len = 12 + batch_size * kRawEventLen;
+  int len = 12 + batch_size * kEventLen;
   *msg = kCliPubMsg;
   itos(msg + 1, id_, 2);
   *(msg + 3) = client_sid_;
@@ -428,7 +428,7 @@ int SprinklerNode::prepare_client_publish(uint8_t *msg, int batch_size) {
     int64_t key = has_workload_
         ? SprinklerWorkload::get_next_wl_key()
         : SprinklerWorkload::get_next_key();
-    itos(msg + 12 + i * kRawEventLen, key, 8);
+    itos(msg + 12 + i * kEventLen + 9, key, 8);
   }
 
   return len;

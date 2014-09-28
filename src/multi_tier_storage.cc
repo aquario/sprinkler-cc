@@ -47,20 +47,20 @@ int64_t MultiTierStorage::put_raw_events(
 //  LOG(INFO) << "DEBUG 2";
   uint8_t *ptr = membuf.chunk;
 
-  // First, reset the memory region.
+  // First, copy over unformatted events.
   int64_t end_offset = membuf.end_offset;
   if (end_offset + nevents * kEventLen <= mem_buf_size_) {
-    memset(ptr + end_offset, 0, nevents * kEventLen);
+    memmove(ptr + end_offset, data, nevents * kEventLen);
   } else {
-    memset(ptr + end_offset, 0, mem_buf_size_ - end_offset);
-    memset(ptr, 0, nevents * kEventLen - (mem_buf_size_ - end_offset));
+    memmove(ptr + end_offset, data, mem_buf_size_ - end_offset);
+    memmove(ptr, data + (mem_buf_size_ - end_offset),
+        nevents * kEventLen - (mem_buf_size_ - end_offset));
   }
 //  LOG(INFO) << "DEBUG 3";
 
   // Next, format events with seq#'s.
   for (int i = 0; i < nevents; ++i) {
     itos(ptr + end_offset + 1, membuf.end_seq, 8);
-    memmove(ptr + end_offset + 9, data + i * kRawEventLen, kRawEventLen);
     end_offset = next_offset(end_offset);
     ++membuf.end_seq;
   }
