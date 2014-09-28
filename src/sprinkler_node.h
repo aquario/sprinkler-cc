@@ -123,9 +123,9 @@ class SprinklerNode {
       int64_t timestamp);
 
   // Send message to subscribe for a stream.
-  void send_sub_message(int src, int8_t sid, int64_t next_seq);
+  bool send_sub_message(int src, int8_t sid, int64_t next_seq);
   // Send message to unsubscribe for a stream.
-  void send_unsub_message(int src, int8_t sid);
+  bool send_unsub_message(int src, int8_t sid);
 
   // Handle (un)subscription messages sent from a peer proxy.
   // Message format:
@@ -175,7 +175,7 @@ class SprinklerNode {
 
   // Time intervals for periodical events in microseconds.
   static const int64_t kAdvPeriod = 2 * 1000000;    // 2 seconds.
-  static const int64_t kPubPeriod = 2 * 1000;      // 2 milliseconds.
+  static const int64_t kPubPeriod = 0;//2 * 100;      // 0.2 milliseconds.
   // Maximum time for an advertisement message to be effective.
   // 6 seconds, i.e. 3 advertisement intervals.
   static const int64_t kMaxAdvLease = 6 * 1000000;

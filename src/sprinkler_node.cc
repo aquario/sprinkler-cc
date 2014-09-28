@@ -35,7 +35,7 @@ void SprinklerNode::start_proxy(int64_t duration) {
       return;
     }
 
-    tl_.wait(1);
+    tl_.wait(0);
     
     // The tail of a proxy chain sends adv & pub messages periodically.
     if (role_ & kTail) {
@@ -79,7 +79,7 @@ void SprinklerNode::start_client(
       return;
     }
 
-    tl_.wait(1);
+    tl_.wait(0);
     
     // Publish events to proxy.
     if (interval == 0 || now > time_to_pub) {
@@ -107,10 +107,11 @@ void SprinklerNode::forward_or_release(const uint8_t *data, int size,
     release(env);
   } else {
     // Forward the message to the next node in the chain.
-    if (tl_.async_send_message(proxies_[0].host, proxies_[0].port,
-        data, size, is_ctrl, release, env)) {
+    int rc = tl_.async_send_message(proxies_[0].host, proxies_[0].port,
+        data, size, is_ctrl, release, env);
+    if (rc) {
       release(env);
-      LOG(ERROR) << "Cannot talk to the successor node. Is it failing?";
+      LOG(ERROR) << "Cannot talk to the successor node. rc = " << rc;
     }
   }
 }
@@ -161,6 +162,7 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
 }
 
 void SprinklerNode::send_adv_message() {
+  LOG(INFO) << "send_adv_message";
   for (int i = 0; i < nproxies_; ++i) {
     if (proxies_[i].id == id_) {
       continue;
@@ -175,11 +177,12 @@ void SprinklerNode::send_adv_message() {
       itos(msg + 2 + 8 * j, sub_info_[j].next_seq - 1, 8);
     }
 
-    if (tl_.async_send_message(proxies_[i].host, proxies_[i].port,
-          msg, msg_len, true, release_chunk, msg)) {
+    int rc = tl_.async_send_message(proxies_[i].host, proxies_[i].port,
+        msg, msg_len, true, release_chunk, msg);
+    if (rc) {
       release_chunk(msg);
       LOG(ERROR) << "send_adv_message: cannot talk to proxy " << proxies_[i].id
-          << ". Is it failing?";
+          << ". rc = " << rc;
     }
   }
 }
@@ -202,13 +205,18 @@ void SprinklerNode::handle_adv_message(const uint8_t *dst) {
         // Update the subscription to new source.
         if (role_ & kTail) {
           if (sub_info_[i].src != -1) {
-            send_unsub_message(sub_info_[i].src, i);
+            if (!send_unsub_message(sub_info_[i].src, i)) {
+              continue;
+            }
           }
-          send_sub_message(new_src, i, sub_info_[i].next_seq);
+          if (!send_sub_message(new_src, i, sub_info_[i].next_seq)) {
+            sub_info_[i].src = -1;
+            continue;
+          }
+          sub_info_[i].src = new_src;
+          sub_info_[i].max_adv = new_max_adv;
+          sub_info_[i].timestamp = timestamp;
         }
-        sub_info_[i].src = new_src;
-        sub_info_[i].max_adv = new_max_adv;
-        sub_info_[i].timestamp = timestamp;
       }
     } else {
       // The max seq# broadcasted from the same source should be non-descending.
@@ -247,7 +255,7 @@ inline bool SprinklerNode::should_update(
       kSubThd / static_cast<double>(time_diff);
 }
 
-void SprinklerNode::send_sub_message(int src, int8_t sid, int64_t next_seq) {
+bool SprinklerNode::send_sub_message(int src, int8_t sid, int64_t next_seq) {
   LOG(INFO) << "SUB " << src << " " << sid << " " << next_seq;
   uint8_t *msg = static_cast<uint8_t *>(dcalloc(11, 1)); 
   *msg = static_cast<uint8_t>(kSubMsg);
@@ -255,27 +263,33 @@ void SprinklerNode::send_sub_message(int src, int8_t sid, int64_t next_seq) {
   *(msg + 2) = static_cast<uint8_t>(sid);
   itos(msg + 3, static_cast<uint64_t>(next_seq), 8);
 
-  if (tl_.async_send_message(proxies_[src].host, proxies_[src].port,
-        msg, 11, true, release_chunk, msg)) {
+  int rc = tl_.async_send_message(proxies_[src].host, proxies_[src].port,
+      msg, 11, true, release_chunk, msg);
+  if (rc) {
     release_chunk(msg);
     LOG(ERROR) << "send_sub_message: cannot talk to proxy " << proxies_[src].id
-        << ". Is it failing?";
+        << ". rc = " << rc;
+    return false;
   }
+  return true;
 }
 
-void SprinklerNode::send_unsub_message(int src, int8_t sid) {
+bool SprinklerNode::send_unsub_message(int src, int8_t sid) {
   LOG(INFO) << "UNSUB " << src << " " << sid;
   uint8_t *msg = static_cast<uint8_t *>(dcalloc(3, 1)); 
   *msg = static_cast<uint8_t>(kSubMsg);
   *(msg + 1) = static_cast<uint8_t>(id_);
   *(msg + 2) = static_cast<uint8_t>(sid);
 
-  if (tl_.async_send_message(proxies_[src].host, proxies_[src].port,
-        msg, 3, true, release_chunk, msg)) {
+  int rc = tl_.async_send_message(proxies_[src].host, proxies_[src].port,
+      msg, 3, true, release_chunk, msg);
+  if (rc) {
     release_chunk(msg);
     LOG(ERROR) << "send_unsub_message: cannot talk to proxy "
-        << proxies_[src].id << ". Is it failing?";
+        << proxies_[src].id << ". rc = " << rc;
+    return false;
   }
+  return true;
 }
 
 void SprinklerNode::handle_subscription(const uint8_t *data) {
@@ -324,6 +338,7 @@ void SprinklerNode::proxy_publish() {
 
       // Already reached as far as what we have, nothing to send.
       if (next_seq == sub_info_[sid].next_seq) {
+//        LOG(INFO) << "nothing to send.";
         continue;
       }
 
@@ -355,12 +370,17 @@ void SprinklerNode::proxy_publish() {
         // Encode #events.
         itos(msg + 3, nevents, 8);
         int64_t size = 11 + nevents * kEventLen;
+        next_seq = get_end_seq(msg + 11 + (nevents - 1) * kEventLen);
         // If send is successful, update next_seq accordingly.
-        if (!tl_.async_send_message(proxies_[pid].host, proxies_[pid].port,
-              msg, size, false, release_chunk, msg)) {
+        int rc = tl_.async_send_message(proxies_[pid].host, proxies_[pid].port,
+            msg, size, false, release_chunk, msg);
+        if (!rc) {
           // Update next_seq.
-          next_seq = get_end_seq(msg + 11 + (nevents - 1) * kEventLen);
+          LOG_EVERY_N(INFO, 100) << "PUB " << pid << " " << sid << " "
+              << request.second << " " << next_seq << " " << nevents;
           request.second = next_seq;
+        } else {
+          LOG(ERROR) << "pub failed with rc " << rc;
         }
       }
     }
@@ -421,10 +441,11 @@ bool SprinklerNode::client_publish(uint8_t *msg, int len) {
     return false;
   }
 
-  if (tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,
-        false, release_chunk, msg)) {
+  int rc = tl_.async_send_message(proxies_[0].host, proxies_[0].port, msg, len,
+      false, release_chunk, msg);
+  if (rc) {
     LOG(ERROR) << "client_publish: cannot talk to proxy " << proxies_[0].id
-        << ". Is it failing?";
+        << ". rc = " << rc;
     return false;
   }
 

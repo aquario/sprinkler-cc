@@ -24,8 +24,8 @@ DEFINE_int64(max_gc_table_size, 1 << 19,
     "524288 events by default.");
 DEFINE_int64(max_gc_chunk_size, 1 << 20,
     "Max #bytes to be GCed before a pause in bytes, 1 MB by default.");
-DEFINE_int64(min_gc_pass, 1048576,
-    "Min bytes in a stream to trigger GC, 1 MB by default.");
+DEFINE_int64(min_gc_pass, 65536,
+    "Min bytes in a stream to trigger GC, 64 KB by default.");
 DEFINE_int64(max_gc_pass, static_cast<int64_t>(1) << 31,
     "Max bytes a GC pass will touch, 2 GB by default.");
 DEFINE_int64(duration, 0,

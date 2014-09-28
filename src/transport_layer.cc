@@ -26,7 +26,7 @@ TransportLayer::TransportLayer(int id, int port,
   deliver_ = deliver;
   gettimeofday(&starttime_, 0);
   // TODO(haoyan): make this a constant ...
-  time_to_attempt_connect_ = uptime() + 2000000;
+  time_to_attempt_connect_ = uptime();
 
   sockets_ = std::list<SprinklerSocket>();
   nsockets_ = 0;
@@ -176,8 +176,8 @@ int TransportLayer::send_ready(SocketIter ss) {
       // is cleaned up automatically.
       LOG(FATAL) << "send_ready: sendmsg";
     } else {
-      VLOG(kLogLevel) << "send_ready: sent " << n << " bytes to socket " << ss->skt
-                << "; iovlen = " << iovlen;
+      VLOG(kLogLevel) << "send_ready: sent " << n << " bytes to socket "
+          << ss->skt << "; iovlen = " << iovlen;
 
       if (n <= ss->ctrl_remainder) {
         ss->ctrl_offset += n;
@@ -250,7 +250,7 @@ std::string TransportLayer::get_endpoint(std::string host, int port) {
 }
 
 int TransportLayer::recv_ready(SocketIter ss) {
-  VLOG(kLogLevel) << "recv_ready";
+//  VLOG(kLogLevel) << "recv_ready";
   if (ss->recv_buffer == NULL) {
     ss->recv_buffer = static_cast<uint8_t *>(dcalloc(kMaxChunkSize, 1));
     ss->received = 0;
@@ -520,6 +520,7 @@ bool TransportLayer::available_for_send(const std::string &host, int port) {
   SocketIter ss = sock_addr.out;
   if (ss == sockets_.end()) {
     // If not connected, return with an error.
+//    LOG(INFO) << "available_for_send: not connected.";
     return false;
   }
   
@@ -681,7 +682,7 @@ int TransportLayer::wait(int timeout) {
     // See if we should attempt some connections.
     if (now >= time_to_attempt_connect_) {
       try_connect_all();
-      time_to_attempt_connect_ = now + 2000000;  // 2 seconds
+      time_to_attempt_connect_ = now + 1000000;  // 1 seconds
     }
 
     // See what sockets need attention.

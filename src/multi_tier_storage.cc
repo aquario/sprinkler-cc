@@ -31,8 +31,8 @@ void MultiTierStorage::init_gc() {
 int64_t MultiTierStorage::put_raw_events(
     int sid, int64_t nevents, const uint8_t *data) {
   MemBuffer &membuf = mem_store_[sid];
-  VLOG(kLogLevel) << "put_raw_events: stream " << sid << "; " << nevents
-      << " events, staring " << membuf.end_seq << ".";
+//  VLOG(kLogLevel) << "put_raw_events: stream " << sid << "; " << nevents
+//      << " events, staring " << membuf.end_seq << ".";
   if (nevents == 0) {
     LOG(WARNING) << "put_raw_events invoked with 0 events";
     return membuf.end_seq;
@@ -44,7 +44,7 @@ int64_t MultiTierStorage::put_raw_events(
     flush_to_disk(sid);
   }
 
-  LOG(INFO) << "DEBUG 2";
+//  LOG(INFO) << "DEBUG 2";
   uint8_t *ptr = membuf.chunk;
 
   // First, reset the memory region.
@@ -55,7 +55,7 @@ int64_t MultiTierStorage::put_raw_events(
     memset(ptr + end_offset, 0, mem_buf_size_ - end_offset);
     memset(ptr, 0, nevents * kEventLen - (mem_buf_size_ - end_offset));
   }
-  LOG(INFO) << "DEBUG 3";
+//  LOG(INFO) << "DEBUG 3";
 
   // Next, format events with seq#'s.
   for (int i = 0; i < nevents; ++i) {
@@ -65,8 +65,7 @@ int64_t MultiTierStorage::put_raw_events(
     ++membuf.end_seq;
   }
 
-//  LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
-  LOG(INFO) << "PUT " << sid << " " << (membuf.end_seq - 1);
+  LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
   // Finally, set the new end_offset, empty flag, and update the counter.
   membuf.end_offset = end_offset;
@@ -514,9 +513,9 @@ void MultiTierStorage::flush_to_disk(int sid) {
       << " gc_begin_offset " << membuf.gc_begin_offset
       << " gc_table_begin_offset " << membuf.gc_table_begin_offset;
 
-  LOG(INFO) << "DEBUG 0";
+//  LOG(INFO) << "DEBUG 0";
   pthread_mutex_unlock(&mutex_[sid]);
-  LOG(INFO) << "DEBUG 1";
+//  LOG(INFO) << "DEBUG 1";
 }
 
 std::string MultiTierStorage::get_chunk_name(int sid, int64_t chunk_id) {
@@ -552,256 +551,254 @@ void MultiTierStorage::run_gc(int thread_id) {
     GcInfo &gc_info = metadata[sid];
     
     // Skip GC if there are too few events.
-    if (get_used_space(membuf) < min_gc_pass_) {
-      continue;
-    }
+    if (get_used_space(membuf) >= min_gc_pass_) {
+      // Perform GC with mutex.
+      pthread_mutex_lock(&mutex_[sid]);
 
-    // Perform GC with mutex.
-    pthread_mutex_lock(&mutex_[sid]);
-
-    // Construct GC table.
-    // Here we assume that flush_to_disk will never interfere with GC table
-    // region, therefore no locking is needed here.  We assume this because
-    // flushing is only invoked when the buffer is almost full, at which point
-    // the GC table region is far away enough from being flushed.
-    int64_t gc_table_size =
+      // Construct GC table.
+      // Here we assume that flush_to_disk will never interfere with GC table
+      // region, therefore no locking is needed here.  We assume this because
+      // flushing is only invoked when the buffer is almost full, at which point
+      // the GC table region is far away enough from being flushed.
+      int64_t gc_table_size =
         get_used_space(membuf) / kEventLen > max_gc_table_size_ * 2
         ? max_gc_table_size_
         : get_used_space(membuf) / kEventLen / 2;
 
-    gc_info.table.clear();
-    int64_t gc_table_end_offset = membuf.end_offset;
-    int64_t gc_table_begin_offset =
+      gc_info.table.clear();
+      int64_t gc_table_end_offset = membuf.end_offset;
+      int64_t gc_table_begin_offset =
         gc_table_end_offset - gc_table_size * kEventLen;
-    if (gc_table_begin_offset < 0) {
-      gc_table_begin_offset += mem_buf_size_;
-    }
+      if (gc_table_begin_offset < 0) {
+        gc_table_begin_offset += mem_buf_size_;
+      }
 
-    // Make sure that GC table always start with a data event.
-    while (gc_table_begin_offset != gc_table_end_offset &&
-        is_tombstone(ptr + gc_table_begin_offset)) {
-      gc_table_begin_offset = next_offset(gc_table_begin_offset);
-    }
-    if (gc_table_begin_offset == gc_table_end_offset) {
-      continue;
-    }
-
-    for (int64_t i = gc_table_begin_offset; i != gc_table_end_offset;
-        i = next_offset(i)) {
-      // Skip this event if it is a tombstone.
-      if (is_tombstone(ptr + i)) {
+      // Make sure that GC table always start with a data event.
+      while (gc_table_begin_offset != gc_table_end_offset &&
+          is_tombstone(ptr + gc_table_begin_offset)) {
+        gc_table_begin_offset = next_offset(gc_table_begin_offset);
+      }
+      if (gc_table_begin_offset == gc_table_end_offset) {
         continue;
       }
-      int64_t key = get_object_id(ptr + i);
-      gc_info.table.insert(key);
-    }
-    LOG(INFO) << "GC started on stream " << sid
+
+      for (int64_t i = gc_table_begin_offset; i != gc_table_end_offset;
+          i = next_offset(i)) {
+        // Skip this event if it is a tombstone.
+        if (is_tombstone(ptr + i)) {
+          continue;
+        }
+        int64_t key = get_object_id(ptr + i);
+        gc_info.table.insert(key);
+      }
+      LOG(INFO) << "GC started on stream " << sid
         << ": (" << membuf.begin_offset << ", " << gc_table_begin_offset
         << ", " << gc_table_end_offset << ") with " << gc_info.table.size()
         << " distinct events in GC table.";
 
-    // Set up flags in MemBuffer marking an on-going GC activity.
-    membuf.gc_begin_offset = membuf.begin_offset;
-    membuf.gc_table_begin_offset = gc_table_begin_offset;
-    membuf.gc_table_end_offset = gc_table_end_offset;
+      // Set up flags in MemBuffer marking an on-going GC activity.
+      membuf.gc_begin_offset = membuf.begin_offset;
+      membuf.gc_table_begin_offset = gc_table_begin_offset;
+      membuf.gc_table_end_offset = gc_table_end_offset;
 
-    VLOG(kLogLevel) << "membuf before GC: [" << membuf.begin_offset << ", "
+      VLOG(kLogLevel) << "membuf before GC: [" << membuf.begin_offset << ", "
         << membuf.end_offset << ")";
 
-    int64_t begin_seq = membuf.begin_seq;
-    int64_t begin_offset = membuf.begin_offset;
-    int64_t end_offset = gc_table_begin_offset;
+      int64_t begin_seq = membuf.begin_seq;
+      int64_t begin_offset = membuf.begin_offset;
+      int64_t end_offset = gc_table_begin_offset;
 
-    if (distance(begin_offset, end_offset) > max_gc_pass_) {
-      begin_offset += distance(begin_offset, end_offset) - max_gc_pass_;
-      if (begin_offset >= mem_buf_size_) {
-        begin_offset -= mem_buf_size_;
-      }
-      begin_seq = get_begin_seq(ptr + begin_offset);
-      LOG(INFO) << "GC begin_offset is set to " << begin_offset;
-    }
-
-    while (begin_offset != end_offset) {
-      // a) Determine where to take a breathe.
-      int64_t pause_offset = end_offset;
-      if (distance(begin_offset, end_offset) > max_gc_chunk_size_) {
-        pause_offset = begin_offset + max_gc_chunk_size_;
-        if (pause_offset >= mem_buf_size_) {
-          pause_offset -= mem_buf_size_;
+      if (distance(begin_offset, end_offset) > max_gc_pass_) {
+        begin_offset += distance(begin_offset, end_offset) - max_gc_pass_;
+        if (begin_offset >= mem_buf_size_) {
+          begin_offset -= mem_buf_size_;
         }
-      } else {
-        pause_offset = end_offset;
+        begin_seq = get_begin_seq(ptr + begin_offset);
+        LOG(INFO) << "GC begin_offset is set to " << begin_offset;
       }
 
-      VLOG(kLogLevel) << "GC processing stream " << sid
+      while (begin_offset != end_offset) {
+        // a) Determine where to take a breathe.
+        int64_t pause_offset = end_offset;
+        if (distance(begin_offset, end_offset) > max_gc_chunk_size_) {
+          pause_offset = begin_offset + max_gc_chunk_size_;
+          if (pause_offset >= mem_buf_size_) {
+            pause_offset -= mem_buf_size_;
+          }
+        } else {
+          pause_offset = end_offset;
+        }
+
+        VLOG(kLogLevel) << "GC processing stream " << sid
           << ", [" << begin_offset << ", " << pause_offset << ")";
 
-      // b) In buffer [begin_offset, pause_offset), scan for events should be
-      // GCed, and turn them into (singleton) tombstones.
-      int64_t cursor = begin_offset;
-      while (cursor != pause_offset) {
-        if (is_data_event(ptr + cursor) &&
-            gc_info.table.count(get_object_id(ptr + cursor)) == 1) {
-          to_tombstone(ptr + cursor);
+        // b) In buffer [begin_offset, pause_offset), scan for events should be
+        // GCed, and turn them into (singleton) tombstones.
+        int64_t cursor = begin_offset;
+        while (cursor != pause_offset) {
+          if (is_data_event(ptr + cursor) &&
+              gc_info.table.count(get_object_id(ptr + cursor)) == 1) {
+            to_tombstone(ptr + cursor);
+          }
+
+          cursor = next_offset(cursor);
         }
 
-        cursor = next_offset(cursor);
-      }
-
-      // c) Merge tombstones.
-      // Variables used in this phase:
-      //   processed: all events AFTER this offset are done;
-      //   cursor: offset of current event being examined;
-      //   current_gc: are we merging GC events now?
-      //   lo: if current_gc is true, the lower bound of current GC event.
-      int64_t processed = pause_offset;
-      cursor = pause_offset;
-      bool current_gc = false;
-      int64_t lo = 0;
-      while (cursor != begin_offset) {
-        cursor = prev_offset(cursor);
-        if (is_data_event(ptr + cursor)) {
-          // For data events, move them rightwards if necessary.
-          processed = prev_offset(processed);
-          if (cursor != processed) {
-            memmove(ptr + processed, ptr + cursor, kEventLen);
-          }
-          current_gc = false;
-        } else {
-          // For GCed events, set a mark if this is the first one in a series,
-          // otherwise, update the mark.
-          if (!current_gc) {
-            // Write the GC event if this is the first in a series.
-            current_gc = true;
+        // c) Merge tombstones.
+        // Variables used in this phase:
+        //   processed: all events AFTER this offset are done;
+        //   cursor: offset of current event being examined;
+        //   current_gc: are we merging GC events now?
+        //   lo: if current_gc is true, the lower bound of current GC event.
+        int64_t processed = pause_offset;
+        cursor = pause_offset;
+        bool current_gc = false;
+        int64_t lo = 0;
+        while (cursor != begin_offset) {
+          cursor = prev_offset(cursor);
+          if (is_data_event(ptr + cursor)) {
+            // For data events, move them rightwards if necessary.
             processed = prev_offset(processed);
             if (cursor != processed) {
               memmove(ptr + processed, ptr + cursor, kEventLen);
             }
+            current_gc = false;
           } else {
-            // Ranges of adjacent GC events should be continuous.
-            CHECK_EQ(get_end_seq(ptr + cursor), lo);
-            // Update the lower bound for current GC event.
+            // For GCed events, set a mark if this is the first one in a series,
+            // otherwise, update the mark.
+            if (!current_gc) {
+              // Write the GC event if this is the first in a series.
+              current_gc = true;
+              processed = prev_offset(processed);
+              if (cursor != processed) {
+                memmove(ptr + processed, ptr + cursor, kEventLen);
+              }
+            } else {
+              // Ranges of adjacent GC events should be continuous.
+              CHECK_EQ(get_end_seq(ptr + cursor), lo);
+              // Update the lower bound for current GC event.
+              memmove(ptr + processed + 1, ptr + cursor + 1, 8);
+            }
+            lo = get_begin_seq(ptr + cursor);
+          }
+        }
+
+        membuf.bytes_saved += distance(begin_offset, processed);
+
+        // d) Squeeze the buffer rightwards.
+        // If there is valid buffer region before where we started, we need
+        // to move that chunk of space rightwards.
+        if (begin_offset != membuf.begin_offset) {
+          // If the scan ended with a GC event, we should check if the event just
+          // before begin_offset is also a GC event, and if so, merge them.
+          cursor = prev_offset(begin_offset);
+          if (is_tombstone(ptr + processed) && is_tombstone(ptr + cursor)) {
+            CHECK_EQ(get_end_seq(ptr + cursor), get_begin_seq(ptr + processed));
             memmove(ptr + processed + 1, ptr + cursor + 1, 8);
+            // From this point on, begin_offset is used as the right boundary
+            // of copying the previous chunk.
+            begin_offset = cursor;
+            membuf.bytes_saved += kEventLen;
           }
-          lo = get_begin_seq(ptr + cursor);
-        }
-      }
 
-      membuf.bytes_saved += distance(begin_offset, processed);
-
-      // d) Squeeze the buffer rightwards.
-      // If there is valid buffer region before where we started, we need
-      // to move that chunk of space rightwards.
-      if (begin_offset != membuf.begin_offset) {
-        // If the scan ended with a GC event, we should check if the event just
-        // before begin_offset is also a GC event, and if so, merge them.
-        cursor = prev_offset(begin_offset);
-        if (is_tombstone(ptr + processed) && is_tombstone(ptr + cursor)) {
-          CHECK_EQ(get_end_seq(ptr + cursor), get_begin_seq(ptr + processed));
-          memmove(ptr + processed + 1, ptr + cursor + 1, 8);
-          // From this point on, begin_offset is used as the right boundary
-          // of copying the previous chunk.
-          begin_offset = cursor;
-          membuf.bytes_saved += kEventLen;
-        }
-
-        // Move the data before begin_offset rightwards.
-        // Calculate the destination offset to shift the buffer.
-        int64_t dist = distance(begin_offset, processed);
-        int64_t src_offset = membuf.begin_offset;
-        int64_t dst_offset = membuf.begin_offset + dist;
-        if (dst_offset >= mem_buf_size_) {
-          dst_offset -= mem_buf_size_;
-        }
-
-        // Offsets at which the source or destination buffer breaks.
-        std::vector<int> cutoffs;
-        if (begin_offset < src_offset) {
-          cutoffs.push_back(mem_buf_size_ - src_offset);
-        }
-        if (processed < dst_offset) {
-          cutoffs.push_back(mem_buf_size_ - dst_offset);
-        }
-        cutoffs.push_back(0);
-        cutoffs.push_back(distance(membuf.begin_offset, begin_offset));
-
-        std::sort(cutoffs.begin(), cutoffs.end());
-        auto last = std::unique(cutoffs.begin(), cutoffs.end());
-        cutoffs.erase(last, cutoffs.end());
-
-        // Copy the memory chunks.  By using cutoffs, it is guaranteed that
-        // in each copy, [offset, offset + len) is a valid region, i.e., do not
-        // pass through offset mem_buf_size_.
-        for (int i = cutoffs.size() - 2; i >= 0; --i) {
-          int64_t this_src = src_offset + cutoffs[i];
-          if (this_src >= mem_buf_size_) {
-            this_src -= mem_buf_size_;
+          // Move the data before begin_offset rightwards.
+          // Calculate the destination offset to shift the buffer.
+          int64_t dist = distance(begin_offset, processed);
+          int64_t src_offset = membuf.begin_offset;
+          int64_t dst_offset = membuf.begin_offset + dist;
+          if (dst_offset >= mem_buf_size_) {
+            dst_offset -= mem_buf_size_;
           }
-          int64_t this_dst = dst_offset + cutoffs[i];
-          if (this_dst >= mem_buf_size_) {
-            this_dst -= mem_buf_size_;
-          }
-          int64_t this_len = cutoffs[i + 1] - cutoffs[i];
 
-          memmove(ptr + this_dst, ptr + this_src, this_len);
+          // Offsets at which the source or destination buffer breaks.
+          std::vector<int> cutoffs;
+          if (begin_offset < src_offset) {
+            cutoffs.push_back(mem_buf_size_ - src_offset);
+          }
+          if (processed < dst_offset) {
+            cutoffs.push_back(mem_buf_size_ - dst_offset);
+          }
+          cutoffs.push_back(0);
+          cutoffs.push_back(distance(membuf.begin_offset, begin_offset));
+
+          std::sort(cutoffs.begin(), cutoffs.end());
+          auto last = std::unique(cutoffs.begin(), cutoffs.end());
+          cutoffs.erase(last, cutoffs.end());
+
+          // Copy the memory chunks.  By using cutoffs, it is guaranteed that
+          // in each copy, [offset, offset + len) is a valid region, i.e., do not
+          // pass through offset mem_buf_size_.
+          for (int i = cutoffs.size() - 2; i >= 0; --i) {
+            int64_t this_src = src_offset + cutoffs[i];
+            if (this_src >= mem_buf_size_) {
+              this_src -= mem_buf_size_;
+            }
+            int64_t this_dst = dst_offset + cutoffs[i];
+            if (this_dst >= mem_buf_size_) {
+              this_dst -= mem_buf_size_;
+            }
+            int64_t this_len = cutoffs[i + 1] - cutoffs[i];
+
+            memmove(ptr + this_dst, ptr + this_src, this_len);
+          }
+
+          // Update offsets.
+          membuf.begin_offset = dst_offset;
+        } else {
+          membuf.begin_offset = processed;
         }
 
-        // Update offsets.
-        membuf.begin_offset = dst_offset;
-      } else {
-        membuf.begin_offset = processed;
-      }
+        VLOG(kLogLevel) << "New starting offset: " << membuf.begin_offset;
 
-      VLOG(kLogLevel) << "New starting offset: " << membuf.begin_offset;
+        // Advance to the next area.
+        begin_offset = pause_offset;
+        begin_seq = get_begin_seq(ptr + pause_offset);
 
-      // Advance to the next area.
-      begin_offset = pause_offset;
-      begin_seq = get_begin_seq(ptr + pause_offset);
+        // Update the flag.
+        membuf.gc_begin_offset = begin_offset;
 
-      // Update the flag.
-      membuf.gc_begin_offset = begin_offset;
+        // Release the lock so that other threads get a chance to enter.
+        VLOG(kLogLevel) << "GC: yield.";
+        pthread_mutex_unlock(&mutex_[sid]);
 
-      // Release the lock so that other threads get a chance to enter.
-      VLOG(kLogLevel) << "GC: yield.";
-      pthread_mutex_unlock(&mutex_[sid]);
+        timespec time_for_sleep;
+        time_for_sleep.tv_sec = 0;
+        time_for_sleep.tv_nsec = 10000000;  // 0.01 sec.
 
-      timespec time_for_sleep;
-      time_for_sleep.tv_sec = 0;
-      time_for_sleep.tv_nsec = 1000000;  // 0.001 sec.
-
-      int rc = 0;
-      if (rc = nanosleep(&time_for_sleep, NULL) < 0) {
-        LOG(ERROR) << "nanosleep() failed on thread " << thread_id
+        int rc = 0;
+        if (rc = nanosleep(&time_for_sleep, NULL) < 0) {
+          LOG(ERROR) << "nanosleep() failed on thread " << thread_id
             << " with rc " << rc << ".";
-      }
+        }
 
-      // Re-aquire the lock before proceeding to another area.
-      pthread_mutex_lock(&mutex_[sid]);
-      VLOG(kLogLevel) << "GC: I'm back.";
-      
-      // If the GC table area is corrupted, abort this GC pass.
-      if (membuf.gc_table_begin_offset == -1) {
-        // Log as WARNING here since this is really unlikely.
-        // Take a deeper look at it if encountered.
-        LOG(WARNING) << "Abort GC since the GC table area is corrupted.";
-        break;
-      }
+        // Re-aquire the lock before proceeding to another area.
+        pthread_mutex_lock(&mutex_[sid]);
+        VLOG(kLogLevel) << "GC: I'm back.";
 
-      // If the begin offset of GC is corrupted, update to current begin_offset.
-      if (membuf.gc_begin_offset == -1) {
-        VLOG(kLogLevel) << "Update gc_begin_offset to " << membuf.begin_offset
+        // If the GC table area is corrupted, abort this GC pass.
+        if (membuf.gc_table_begin_offset == -1) {
+          // Log as WARNING here since this is really unlikely.
+          // Take a deeper look at it if encountered.
+          LOG(WARNING) << "Abort GC since the GC table area is corrupted.";
+          break;
+        }
+
+        // If the begin offset of GC is corrupted, update to current begin_offset.
+        if (membuf.gc_begin_offset == -1) {
+          VLOG(kLogLevel) << "Update gc_begin_offset to " << membuf.begin_offset
             << " since the buffer before this offset has been flushed to disk.";
-        begin_offset = membuf.gc_begin_offset = membuf.begin_offset;
-        begin_seq = get_begin_seq(ptr + begin_offset);
+          begin_offset = membuf.gc_begin_offset = membuf.begin_offset;
+          begin_seq = get_begin_seq(ptr + begin_offset);
+        }
       }
-    }
 
-    LOG(INFO) << "GC finished on stream " << sid
+      LOG(INFO) << "GC finished on stream " << sid
         << ". New begin_offset is " << membuf.begin_offset << ".";
 
-    report_state(sid);
+      report_state(sid);
 
-    pthread_mutex_unlock(&mutex_[sid]);
+      pthread_mutex_unlock(&mutex_[sid]);
+    }
 
     if (++stream_idx == my_streams.size()) {
       stream_idx = 0;
