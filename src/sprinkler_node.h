@@ -69,7 +69,7 @@ class SprinklerNode {
       storage_(nproxies, nstreams, mem_buf_size, disk_chunk_size,
           gc_thread_count, min_events_to_gc,
           max_gc_table_size, max_gc_pass, max_gc_chunk_size),
-      time_to_adv_(kAdvPeriod), time_to_pub_(kPubPeriod) {}
+      time_to_adv_(0), time_to_pub_(0) {}
 
   // Constructor for client.
   SprinklerNode(int id, int port, int role, int sid,

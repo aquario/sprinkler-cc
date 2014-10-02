@@ -144,7 +144,7 @@ class TransportLayer {
 
   // Maximum data backlog size allowed on any outgoing socket buffer, in bytes.
   // Control messages are exempted.
-  static const int kMaxDataBacklog = 1048576;  // 1 MB.
+  static const int kMaxDataBacklog = 10485760;  // 10 MB.
 
   // Log level for this class.
   static const int kLogLevel = 10;

@@ -44,7 +44,6 @@ int64_t MultiTierStorage::put_raw_events(
     flush_to_disk(sid);
   }
 
-//  LOG(INFO) << "DEBUG 2";
   uint8_t *ptr = membuf.chunk;
 
   // First, copy over unformatted events.
@@ -56,7 +55,6 @@ int64_t MultiTierStorage::put_raw_events(
     memmove(ptr, data + (mem_buf_size_ - end_offset),
         nevents * kEventLen - (mem_buf_size_ - end_offset));
   }
-//  LOG(INFO) << "DEBUG 3";
 
   // Next, format events with seq#'s.
   for (int i = 0; i < nevents; ++i) {
@@ -513,9 +511,7 @@ void MultiTierStorage::flush_to_disk(int sid) {
       << " gc_begin_offset " << membuf.gc_begin_offset
       << " gc_table_begin_offset " << membuf.gc_table_begin_offset;
 
-//  LOG(INFO) << "DEBUG 0";
   pthread_mutex_unlock(&mutex_[sid]);
-//  LOG(INFO) << "DEBUG 1";
 }
 
 std::string MultiTierStorage::get_chunk_name(int sid, int64_t chunk_id) {

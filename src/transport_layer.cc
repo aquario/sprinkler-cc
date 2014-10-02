@@ -25,6 +25,7 @@ TransportLayer::TransportLayer(int id, int port,
   outgoing_ = outgoing;
   deliver_ = deliver;
   gettimeofday(&starttime_, 0);
+  LOG(INFO) << "START";
   // TODO(haoyan): make this a constant ...
   time_to_attempt_connect_ = uptime();
 
@@ -38,7 +39,7 @@ TransportLayer::TransportLayer(int id, int port,
 
 TransportLayer::~TransportLayer() {
   for (SocketIter sit = sockets_.begin(); sit != sockets_.end(); ++sit) {
-    shutdown(sit->skt, SHUT_RDWR);
+    close(sit->skt);
   }
 }
 
@@ -174,7 +175,7 @@ int TransportLayer::send_ready(SocketIter ss) {
       // TODO(haoyan): should I do anything about this?  Presumably the
       // receive side of the socket is closed and everything
       // is cleaned up automatically.
-      LOG(FATAL) << "send_ready: sendmsg";
+      return 0;
     } else {
       VLOG(kLogLevel) << "send_ready: sent " << n << " bytes to socket "
           << ss->skt << "; iovlen = " << iovlen;
@@ -356,7 +357,7 @@ int TransportLayer::got_client(SocketIter ss) {
   // setsockopt(clt, IPPROTO_TCP, TCP_NODELAY,
   //            (void *) &on, sizeof(on));
 
-  int buflen = 128 * 1024;
+  int buflen = 1416 * 1024;
   setsockopt(clt, SOL_SOCKET, SO_SNDBUF, &buflen, sizeof(buflen));
   setsockopt(clt, SOL_SOCKET, SO_RCVBUF, &buflen, sizeof(buflen));
 
@@ -388,7 +389,7 @@ void TransportLayer::tl_listen() {
   setsockopt(skt, SOL_SOCKET, SO_REUSEADDR,
       static_cast<void *>(&on), sizeof(on));
 
-  int buflen = 128 * 1024;
+  int buflen = 1416 * 1024;
   setsockopt(skt, SOL_SOCKET, SO_SNDBUF, &buflen, sizeof(buflen));
   setsockopt(skt, SOL_SOCKET, SO_RCVBUF, &buflen, sizeof(buflen));
 
@@ -472,7 +473,7 @@ void TransportLayer::try_connect(SocketAddr *socket_addr) {
       return;
     }
 
-    int buflen = 128 * 1024;
+    int buflen = 1416 * 1024;
     setsockopt(skt, SOL_SOCKET, SO_SNDBUF, &buflen, sizeof(buflen));
     setsockopt(skt, SOL_SOCKET, SO_RCVBUF, &buflen, sizeof(buflen));
 
@@ -552,7 +553,8 @@ int TransportLayer::async_send_message(const std::string &host, int port,
 }
 
 int TransportLayer::do_poll(struct pollfd fds[], nfds_t nfds, int timeout) {
-  return poll(fds, nfds, timeout);
+  return poll(fds, nfds, 3);
+//  return poll(fds, nfds, timeout);
 }
 
 void TransportLayer::prepare_poll(struct pollfd *fds) {
@@ -639,7 +641,12 @@ bool TransportLayer::handle_events(struct pollfd *fds, int n) {
       }
     }
     if (events & POLLOUT) {
-      (sit->output)(sit);
+      if (!(sit->output)(sit)) {
+        VLOG(kLogLevel) << "handle_events: closing cocket";
+        close(sit->skt);
+        sit->skt = -1;
+        closed_sockets = true;
+      }
     }
     if (events & POLLERR) {
       LOG(ERROR) << "POLLERR";
@@ -682,7 +689,7 @@ int TransportLayer::wait(int timeout) {
     // See if we should attempt some connections.
     if (now >= time_to_attempt_connect_) {
       try_connect_all();
-      time_to_attempt_connect_ = now + 1000000;  // 1 seconds
+      time_to_attempt_connect_ = now + 100000;  // 0.1 seconds
     }
 
     // See what sockets need attention.
@@ -729,7 +736,8 @@ void SprinklerSocket::init() {
   if (getsockopt(skt, SOL_SOCKET, SO_SNDBUF, &sndbuf_size, &optlen) < 0) {
     LOG(ERROR) << "add_socket: getsockopt SO_SNDBUF";
   } else {
-    VLOG(TransportLayer::kLogLevel) << "add_socket " << descr
+//    VLOG(TransportLayer::kLogLevel) << "add_socket " << descr
+    LOG(INFO) << "add_socket " << descr
         << ": sndbuf " << sndbuf_size << "\n";
   }
   optlen = sizeof(rcvbuf_size);

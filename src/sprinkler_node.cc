@@ -23,6 +23,8 @@ void SprinklerNode::start_proxy(int64_t duration) {
     tl_.register_peer(proxies_[i].host, proxies_[i].port);
   }
 
+  time_to_adv_ = 1000;
+  time_to_pub_ = 1000;
   for (;;) {
     int64_t now  = tl_.uptime();
 
@@ -336,51 +338,58 @@ void SprinklerNode::proxy_publish() {
       int64_t next_seq = request.second;
       CHECK_LE(next_seq, sub_info_[sid].next_seq);
 
-      // Already reached as far as what we have, nothing to send.
-      if (next_seq == sub_info_[sid].next_seq) {
+      // TODO(haoyan): make this adaptive: if we are catching up on disk,
+      // make it fast by having end of loop value larger; but if we are
+      // in memory, keep the contention small by fixing this to 1.
+      for (int i = 0; i < 1; ++i) {
+        // Already reached as far as what we have, nothing to send.
+        if (next_seq == sub_info_[sid].next_seq) {
 //        LOG(INFO) << "nothing to send.";
-        continue;
-      }
+          continue;
+        }
 
-      // If the connection to destination proxy is not available or too busy,
-      // do not send this time.
-      if (!tl_.available_for_send(proxies_[pid].host, proxies_[pid].port)) {
-        continue;
-      }
+        // If the connection to destination proxy is not available or too busy,
+        // do not send this time.
+        if (!tl_.available_for_send(proxies_[pid].host, proxies_[pid].port)) {
+          break;
+        }
 
-      VLOG(kLogLevel) << "Fetch event (" << sid << ", " << next_seq
+        VLOG(kLogLevel) << "Fetch event (" << sid << ", " << next_seq
           << ") for proxy " << pid;
 
-      uint8_t *msg =
-        static_cast<uint8_t *>(dcalloc(TransportLayer::kMaxChunkSize, 1));
-      *msg = kPxPubMsg;
-      *(msg + 1) = static_cast<uint8_t>(id_); 
-      *(msg + 2) = static_cast<uint8_t>(sid);
+        uint8_t *msg =
+          static_cast<uint8_t *>(dcalloc(TransportLayer::kMaxChunkSize, 1));
+        *msg = kPxPubMsg;
+        *(msg + 1) = static_cast<uint8_t>(id_); 
+        *(msg + 2) = static_cast<uint8_t>(sid);
 
-      int64_t nevents =
+        int64_t nevents =
           storage_.get_events(pid, sid, next_seq, kMaxEventsPerMsg, msg + 11);
-      if (nevents < 0) {
-        LOG(WARNING) << "Failed to get events: error code " << nevents;
-      } else {
-        VLOG(kLogLevel) << "proxy_publish to proxy " << pid << " stream " << sid
+        if (nevents < 0) {
+          LOG(WARNING) << "Failed to get events: error code " << nevents;
+          break;
+        } else {
+          VLOG(kLogLevel) << "proxy_publish to proxy " << pid << " stream " << sid
             << " seq: [" << get_begin_seq(msg + 11)
             << ", " << get_end_seq(msg + 11 + (nevents - 1) * kEventLen)
             << ") next_seq: " << next_seq
             << " nevents: " << nevents;
-        // Encode #events.
-        itos(msg + 3, nevents, 8);
-        int64_t size = 11 + nevents * kEventLen;
-        next_seq = get_end_seq(msg + 11 + (nevents - 1) * kEventLen);
-        // If send is successful, update next_seq accordingly.
-        int rc = tl_.async_send_message(proxies_[pid].host, proxies_[pid].port,
-            msg, size, false, release_chunk, msg);
-        if (!rc) {
-          // Update next_seq.
-          LOG_EVERY_N(INFO, 100) << "PUB " << pid << " " << sid << " "
+          // Encode #events.
+          itos(msg + 3, nevents, 8);
+          int64_t size = 11 + nevents * kEventLen;
+          next_seq = get_end_seq(msg + 11 + (nevents - 1) * kEventLen);
+          // If send is successful, update next_seq accordingly.
+          int rc = tl_.async_send_message(proxies_[pid].host, proxies_[pid].port,
+              msg, size, false, release_chunk, msg);
+          if (!rc) {
+            // Update next_seq.
+            LOG_EVERY_N(INFO, 100) << "PUB " << pid << " " << sid << " "
               << request.second << " " << next_seq << " " << nevents;
-          request.second = next_seq;
-        } else {
-          LOG(ERROR) << "pub failed with rc " << rc;
+            request.second = next_seq;
+          } else {
+            LOG(ERROR) << "pub failed with rc " << rc;
+            break;
+          }
         }
       }
     }
