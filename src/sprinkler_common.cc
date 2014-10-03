@@ -54,6 +54,10 @@ int64_t get_object_id(const uint8_t *event) {
   return static_cast<int64_t>(stoi(event + 9, 8));
 }
 
+int64_t get_timestamp(const uint8_t *event) {
+  return static_cast<int64_t>(stoi(event + kEventLen - 8, 8));
+}
+
 void to_tombstone(uint8_t *event) {
   CHECK_EQ(*event, 0);
   int64_t end_seq = get_end_seq(event);

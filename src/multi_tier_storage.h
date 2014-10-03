@@ -28,11 +28,11 @@ struct ChunkInfo {
 class MultiTierStorage {
  public:
   MultiTierStorage(int nproxies, int nstreams,
-      int64_t mem_buf_size, int64_t disk_chunk_size,
+      int64_t mem_buf_size, int64_t disk_chunk_size, int64_t pub_delay,
       int gc_thread_count, int64_t min_gc_pass, int64_t max_gc_pass,
       int64_t max_gc_table_size, int64_t max_gc_chunk_size)
-    : nstreams_(nstreams),
-      mutex_(nstreams), next_chunk_no_(nstreams, 0), chunk_summary_(nstreams),
+    : nstreams_(nstreams), mutex_(nstreams), pub_delay_(pub_delay),
+      next_chunk_no_(nstreams, 0), chunk_summary_(nstreams),
       max_gc_table_size_(max_gc_table_size),
       min_gc_pass_(min_gc_pass), max_gc_pass_(max_gc_pass),
       max_gc_chunk_size_(max_gc_chunk_size),
@@ -57,8 +57,14 @@ class MultiTierStorage {
 
     // Init publish buffers.
     publish_buffer_ = std::vector< std::vector<PublishBuffer> >(nstreams);
-    for (int i = 0; i < nstreams; ++i) {
-      publish_buffer_[i] = std::vector<PublishBuffer>(nproxies);
+    for (int i = 0; i < nproxies; ++i) {
+      publish_buffer_[i] = std::vector<PublishBuffer>(nstreams);
+    }
+
+    // Init last_pub_timestamp_.
+    last_pub_timestamp_ = std::vector< std::vector<int64_t> >(nstreams);
+    for (int i = 0; i < nproxies; ++i) {
+      last_pub_timestamp_[i] = std::vector<int64_t>(nstreams);
     }
 
     // Initialize garbage collection.
@@ -68,7 +74,8 @@ class MultiTierStorage {
   // Add a block of raw events from a client.
   // "data" here contains only messages, no header is included.
   // Returns the smallest seq# that has not been assigned yet.
-  int64_t put_raw_events(int sid, int64_t nevents, const uint8_t *data);
+  int64_t put_raw_events(int sid, int64_t now,
+      int64_t nevents, const uint8_t *data);
 
   // Add a block of formatted events from a peer proxy.
   // "data" here contains only messages, no header is included.
@@ -78,8 +85,8 @@ class MultiTierStorage {
   // Retrieve events from a stream.
   // Return #events fetched into buffer; or a negative value indicating a type
   // of error.  See error code constants for error types.
-  int64_t get_events(int pid, int sid, int64_t first_seq, int64_t max_events,
-      uint8_t *buffer);
+  int64_t get_events(int pid, int sid, int64_t now,
+      int64_t first_seq, int64_t max_events, uint8_t *buffer);
 
   // Report the state of all streams/a stream: total events added, bytes wrote,
   // space saved by GC, and current used buffer range.
@@ -93,6 +100,7 @@ class MultiTierStorage {
   // Error codes.
   static const int64_t kErrFuture = -1;  // Asked for a future seq#.
   static const int64_t kErrPast = -2;  // Asked for a seq# that is discarded.
+  static const int64_t kErrDelay = -3;  // Minimum delay to publish not reached.
 
   // Log level for this class.
   static const int kLogLevel = 8;
@@ -230,6 +238,13 @@ class MultiTierStorage {
   std::vector<pthread_mutex_t> mutex_;
   // Buffer to batch publishing on a continuous stream.
   std::vector< std::vector<PublishBuffer> > publish_buffer_;
+  // Timestamp of the addition of the most recently published event on a
+  // subscription, in milliseconds.
+  std::vector< std::vector<int64_t> > last_pub_timestamp_;
+  // Artificial delay before publishing an event in milliseconds, for the
+  // purpose that the event could get more chance to be garbage collected
+  // during the delay.
+  int64_t pub_delay_;
 
   // Maximum #events in the hash table used to match previous events.
   int64_t max_gc_table_size_;

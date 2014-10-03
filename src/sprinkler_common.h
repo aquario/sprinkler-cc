@@ -34,6 +34,9 @@ bool in_range(const uint8_t *event, int64_t seq);
 // Returns the object id in a data event.
 int64_t get_object_id(const uint8_t *event);
 
+// Get the timestamp when this events is first stored at the local proxy.
+int64_t get_timestamp(const uint8_t *event);
+
 // Convert a data event into a singleton tombstone.
 void to_tombstone(uint8_t *event);
 

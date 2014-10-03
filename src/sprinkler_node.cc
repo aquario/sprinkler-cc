@@ -357,35 +357,40 @@ void SprinklerNode::proxy_publish() {
         VLOG(kLogLevel) << "Fetch event (" << sid << ", " << next_seq
           << ") for proxy " << pid;
 
-        uint8_t *msg =
-          static_cast<uint8_t *>(dcalloc(TransportLayer::kMaxChunkSize, 1));
-        *msg = kPxPubMsg;
-        *(msg + 1) = static_cast<uint8_t>(id_); 
-        *(msg + 2) = static_cast<uint8_t>(sid);
+        if (pub_msg_buffer_ == NULL) {
+          pub_msg_buffer_ =
+              static_cast<uint8_t *>(dcalloc(TransportLayer::kMaxChunkSize, 1));
+        }
+        *pub_msg_buffer_ = kPxPubMsg;
+        *(pub_msg_buffer_ + 1) = static_cast<uint8_t>(id_); 
+        *(pub_msg_buffer_ + 2) = static_cast<uint8_t>(sid);
 
-        int64_t nevents =
-          storage_.get_events(pid, sid, next_seq, kMaxEventsPerMsg, msg + 11);
+        int64_t now = local_streams_.count(sid) == 1 ? tl_.uptime() / 1000 : -1;
+        int64_t nevents = storage_.get_events(pid, sid, now,
+              next_seq, kMaxEventsPerMsg, pub_msg_buffer_ + 11);
         if (nevents < 0) {
           LOG(WARNING) << "Failed to get events: error code " << nevents;
           break;
         } else {
           VLOG(kLogLevel) << "proxy_publish to proxy " << pid << " stream " << sid
-            << " seq: [" << get_begin_seq(msg + 11)
-            << ", " << get_end_seq(msg + 11 + (nevents - 1) * kEventLen)
+            << " seq: [" << get_begin_seq(pub_msg_buffer_ + 11) << ", "
+            << get_end_seq(pub_msg_buffer_ + 11 + (nevents - 1) * kEventLen)
             << ") next_seq: " << next_seq
             << " nevents: " << nevents;
           // Encode #events.
-          itos(msg + 3, nevents, 8);
+          itos(pub_msg_buffer_ + 3, nevents, 8);
           int64_t size = 11 + nevents * kEventLen;
-          next_seq = get_end_seq(msg + 11 + (nevents - 1) * kEventLen);
+          next_seq =
+              get_end_seq(pub_msg_buffer_ + 11 + (nevents - 1) * kEventLen);
           // If send is successful, update next_seq accordingly.
           int rc = tl_.async_send_message(proxies_[pid].host, proxies_[pid].port,
-              msg, size, false, release_chunk, msg);
+              pub_msg_buffer_, size, false, release_chunk, pub_msg_buffer_);
           if (!rc) {
             // Update next_seq.
             LOG_EVERY_N(INFO, 100) << "PUB " << pid << " " << sid << " "
               << request.second << " " << next_seq << " " << nevents;
             request.second = next_seq;
+            pub_msg_buffer_ = NULL;
           } else {
             LOG(ERROR) << "pub failed with rc " << rc;
             break;
@@ -471,7 +476,8 @@ void SprinklerNode::handle_client_publish(const uint8_t *data) {
       << " on stream " << sid << " with " << nevents << " events";
 
   // Store events and update next_seq for future advertisement messages.
-  sub_info_[sid].next_seq = storage_.put_raw_events(sid, nevents, data + 12);
+  sub_info_[sid].next_seq =
+      storage_.put_raw_events(sid, tl_.uptime() / 1000, nevents, data + 12);
 }
 
 void SprinklerNode::release_chunk(void *chunk) {

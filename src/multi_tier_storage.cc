@@ -29,7 +29,7 @@ void MultiTierStorage::init_gc() {
 }
 
 int64_t MultiTierStorage::put_raw_events(
-    int sid, int64_t nevents, const uint8_t *data) {
+    int sid, int64_t now, int64_t nevents, const uint8_t *data) {
   MemBuffer &membuf = mem_store_[sid];
 //  VLOG(kLogLevel) << "put_raw_events: stream " << sid << "; " << nevents
 //      << " events, staring " << membuf.end_seq << ".";
@@ -56,9 +56,10 @@ int64_t MultiTierStorage::put_raw_events(
         nevents * kEventLen - (mem_buf_size_ - end_offset));
   }
 
-  // Next, format events with seq#'s.
+  // Next, format events with seq#'s and timestamps.
   for (int i = 0; i < nevents; ++i) {
     itos(ptr + end_offset + 1, membuf.end_seq, 8);
+    itos(ptr + end_offset + kEventLen - 8, now, 8);
     end_offset = next_offset(end_offset);
     ++membuf.end_seq;
   }
@@ -185,8 +186,8 @@ int64_t MultiTierStorage::put_events(
   return membuf.end_seq;
 }
 
-int64_t MultiTierStorage::get_events(
-    int pid, int sid, int64_t first_seq, int64_t max_events, uint8_t *buffer) {
+int64_t MultiTierStorage::get_events(int pid, int sid, int64_t now,
+    int64_t first_seq, int64_t max_events, uint8_t *buffer) {
   MemBuffer &membuf = mem_store_[sid];
   VLOG(kLogLevel) << "get_events for proxy " << pid
       << " on stream " << sid << "; starting at "
@@ -203,10 +204,10 @@ int64_t MultiTierStorage::get_events(
   PublishBuffer &pubbuf = publish_buffer_[pid][sid];
   if (pubbuf.remainder > 0 &&
       in_range(pubbuf.buffer + pubbuf.offset, first_seq)) {
-    VLOG(kLogLevel) << "Requested seq# " << first_seq << " is in pubbuf.";
     // Reuested events matches publish buffer, extract from the buffer directly.
     // No need for locking since we are reading from the PublishBuffer,
     // not the main memory buffer.
+    VLOG(kLogLevel) << "Requested seq# " << first_seq << " is in pubbuf.";
     int64_t nevents = pubbuf.remainder / kEventLen;
     if (nevents > max_events) {
       nevents = max_events;
@@ -215,11 +216,13 @@ int64_t MultiTierStorage::get_events(
     pubbuf.offset += nevents * kEventLen;
     pubbuf.remainder -= nevents * kEventLen;
 
+    // No need to update timestamp since it was updated when these events were
+    // loaded into pubbuf.
     return nevents;
   } else if (first_seq < membuf.begin_seq) {
-    VLOG(kLogLevel) << "Requested seq# " << first_seq << " is on disk.";
     // first_seq is not in memory.
     // Load the chunk that contains the seq# into publish buffer.
+    VLOG(kLogLevel) << "Requested seq# " << first_seq << " is on disk.";
     int64_t chunk_id = get_chunk_id_by_seq(sid, first_seq);
     // We know that this seq# is on disk for sure ...
     CHECK_NE(chunk_id, -1);
@@ -243,12 +246,23 @@ int64_t MultiTierStorage::get_events(
     pubbuf.offset += nevents * kEventLen;
     pubbuf.remainder -= nevents * kEventLen;
 
+    // Update the timestamp.
+    if (now != -1) {
+      last_pub_timestamp_[pid][sid] =
+          get_timestamp(pubbuf.buffer + disk_chunk_size_ - kEventLen);
+    }
+
     return nevents;
   } else {
-    VLOG(kLogLevel) << "Requested seq# " << first_seq
-        << " is in memory, but not in the pubbuf.";
     // If nothing is left in the publish buffer, we have to fetch events from
     // the main in-memory buffer.
+    VLOG(kLogLevel) << "Requested seq# " << first_seq
+        << " is in memory, but not in the pubbuf.";
+
+    if (now != -1 && now - last_pub_timestamp_[pid][sid] < pub_delay_) {
+      return kErrDelay;
+    }
+
     pthread_mutex_lock(&mutex_[sid]);
     // First, determine the memory range needs to copy.
     int64_t begin_offset = adjust_offset_circular(first_seq,
@@ -286,6 +300,12 @@ int64_t MultiTierStorage::get_events(
     // Unlock the mutex.  No further code in this method touches the in-memory
     // buffer anymore.
     pthread_mutex_unlock(&mutex_[sid]);
+
+    // Update the timestamp.
+    if (now != -1) {
+      last_pub_timestamp_[pid][sid] =
+          get_timestamp(pubbuf.buffer + len - kEventLen);
+    }
 
     int64_t nevents = len / kEventLen > max_events
         ? max_events
