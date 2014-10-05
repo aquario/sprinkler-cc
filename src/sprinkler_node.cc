@@ -258,7 +258,7 @@ inline bool SprinklerNode::should_update(
 }
 
 bool SprinklerNode::send_sub_message(int src, int8_t sid, int64_t next_seq) {
-  LOG(INFO) << "SUB " << src << " " << sid << " " << next_seq;
+  LOG(INFO) << "SUB " << src << " " << static_cast<int>(sid) << " " << next_seq;
   uint8_t *msg = static_cast<uint8_t *>(dcalloc(11, 1)); 
   *msg = static_cast<uint8_t>(kSubMsg);
   *(msg + 1) = static_cast<uint8_t>(id_);
@@ -277,7 +277,7 @@ bool SprinklerNode::send_sub_message(int src, int8_t sid, int64_t next_seq) {
 }
 
 bool SprinklerNode::send_unsub_message(int src, int8_t sid) {
-  LOG(INFO) << "UNSUB " << src << " " << sid;
+  LOG(INFO) << "UNSUB " << src << " " << static_cast<int>(sid);
   uint8_t *msg = static_cast<uint8_t *>(dcalloc(3, 1)); 
   *msg = static_cast<uint8_t>(kSubMsg);
   *(msg + 1) = static_cast<uint8_t>(id_);

@@ -64,7 +64,7 @@ int64_t MultiTierStorage::put_raw_events(
     ++membuf.end_seq;
   }
 
-  LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
+  LOG_EVERY_N(INFO, 5) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
   // Finally, set the new end_offset, empty flag, and update the counter.
   membuf.end_offset = end_offset;
@@ -181,7 +181,7 @@ int64_t MultiTierStorage::put_events(
   // Update the counter.
   membuf.bytes_wrote += nevents * kEventLen;
 
-  LOG_EVERY_N(INFO, 100) << "PUT " << sid << " " << (membuf.end_seq - 1);
+  LOG_EVERY_N(INFO, 5) << "PUT " << sid << " " << (membuf.end_seq - 1);
 
   return membuf.end_seq;
 }
