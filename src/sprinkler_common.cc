@@ -67,7 +67,7 @@ void to_tombstone(uint8_t *event) {
   memset(event + 17, 0, kEventLen - 17);
 }
 
-void debug_show_memory(uint8_t *ptr, int size, int log_level) {
+void debug_show_memory(const uint8_t *ptr, int size, int log_level) {
   std::string logmsg = "";
   for (int i = 0; i < size; ++i) {
     if (i) {

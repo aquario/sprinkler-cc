@@ -41,6 +41,6 @@ int64_t get_timestamp(const uint8_t *event);
 void to_tombstone(uint8_t *event);
 
 // For debugging: print a chunk of memory in integers.
-void debug_show_memory(uint8_t *ptr, int size, int log_level);
+void debug_show_memory(const uint8_t *ptr, int size, int log_level);
 
 #endif  // SPRINKLER_COMMON_H_

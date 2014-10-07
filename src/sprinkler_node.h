@@ -52,6 +52,7 @@ class SprinklerNode {
  public:
   // Constructor for proxy.
   SprinklerNode(int id, int port, int role,
+      bool ack_enabled, std::string client_host, int client_port,
       int nproxies, const std::vector<Proxy> &proxies,
       int nstreams, const std::unordered_set<int> &sids,
       int64_t mem_buf_size, int64_t disk_chunk_size,
@@ -59,6 +60,8 @@ class SprinklerNode {
       int gc_thread_count, int64_t min_events_to_gc,
       int64_t max_gc_table_size, int64_t max_gc_pass, int64_t max_gc_chunk_size)
     : id_(id), role_(role),
+      ack_enabled_(ack_enabled),
+      client_host_(client_host), client_port_(client_port),
       nproxies_(nproxies), proxies_(proxies),
       tl_(id, port,
           std::bind(&SprinklerNode::outgoing, this,
@@ -162,6 +165,10 @@ class SprinklerNode {
   void forward_or_release(const uint8_t *data, int size,
       bool is_ctrl, std::function<void(void *)> release, void *env);
 
+  // Sending and handling ack messages.  Currently for experiments only.
+  void send_ack_message(int pid, int sid, int64_t seq);
+  void handle_ack_message(const uint8_t *data);
+
   // Release a chunk of memory.
   static void release_chunk(void *);
 
@@ -173,6 +180,8 @@ class SprinklerNode {
     kUnsubMsg,    // Unsubscribe.
     kPxPubMsg,    // Publish formatted events from proxy.
     kCliPubMsg,   // Publish unformatted events from client.
+    kCliRegMsg,   // Register a client at proxy.
+    kAckMsg,      // Ack message on receiving events.
   };
 
   // Time intervals for periodical events in microseconds.
@@ -225,6 +234,13 @@ class SprinklerNode {
 
   // For client: the stream it publishes to.
   int client_sid_;
+
+  // Client address when ack messages are sent.
+  std::string client_host_;
+  int client_port_;
+
+  // Ack messages.
+  bool ack_enabled_;
 
   // If the client is using a pre-computed workload file.
   bool has_workload_;

@@ -23,6 +23,10 @@ void SprinklerNode::start_proxy(int64_t duration) {
     tl_.register_peer(proxies_[i].host, proxies_[i].port);
   }
 
+  if (client_port_ != 0) {
+    tl_.register_peer(client_host_, client_port_);
+  }
+
   time_to_adv_ = 1000;
   time_to_pub_ = 1000;
   for (;;) {
@@ -71,6 +75,7 @@ void SprinklerNode::start_client(
   int64_t time_to_pub = interval;
   uint8_t *msg = NULL;
   int len = 0;
+  int64_t total_msgs = 0;
 
   for (;;) {
     int64_t now  = tl_.uptime();
@@ -96,6 +101,8 @@ void SprinklerNode::start_client(
       // next time.  Do not reset msg if previous publish failed, so that next
       // time we could re-send these events.
       if (client_publish(msg, len)) {
+        total_msgs += batch_size;
+        LOG(INFO) << "PUB " << total_msgs;
         msg = NULL;
       }
       time_to_pub += interval;
@@ -131,6 +138,7 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
   MessageTypes msg_type = static_cast<MessageTypes>(data[0]);
   switch (msg_type) {
     case kWelMsg:
+      LOG(ERROR) << "kWelMsg is not implemented ...";
       break;
     case kAdvMsg:
       CHECK(role_);   // Has something, i.e., not a client.
@@ -157,6 +165,17 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
       handle_client_publish(data);
       forward_or_release(data, size, false, release, env);
       break;
+    case kAckMsg:
+      debug_show_memory(data, 11, 1);
+      if (!role_ || (ack_enabled_ && (role_ & kTail))) {
+        handle_ack_message(data);
+      }
+      if (role_) {
+        forward_or_release(data, size, true, release, env);
+      } else {
+        release(env);
+      }
+      break;
     default:
       LOG(ERROR) << "Unrecognized message type: " << msg_type;
       release(env);
@@ -164,7 +183,6 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
 }
 
 void SprinklerNode::send_adv_message() {
-  LOG(INFO) << "send_adv_message";
   for (int i = 0; i < nproxies_; ++i) {
     if (proxies_[i].id == id_) {
       continue;
@@ -427,6 +445,10 @@ void SprinklerNode::handle_proxy_publish(const uint8_t *data) {
     int64_t next_seq =
         storage_.put_events(sid, nevents, const_cast<uint8_t *>(data + 11));
     sub_info_[sid].next_seq = next_seq;
+
+    if (ack_enabled_ && (role_ & kTail)) {
+      send_ack_message(pid, sid, next_seq - 1);
+    }
   }
 }
 
@@ -478,8 +500,64 @@ void SprinklerNode::handle_client_publish(const uint8_t *data) {
   // Store events and update next_seq for future advertisement messages.
   sub_info_[sid].next_seq =
       storage_.put_raw_events(sid, tl_.uptime() / 1000, nevents, data + 12);
+
+  if (ack_enabled_ && (role_ & kTail)) {
+    send_ack_message(-1, sid, sub_info_[sid].next_seq - 1);
+  }
+}
+
+void SprinklerNode::send_ack_message(int pid, int sid, int64_t seq) {
+  uint8_t *msg = static_cast<uint8_t *>(dcalloc(12, 1));
+  std::string dst_host;
+  int dst_port = 0;
+  int len = 0;
+
+  msg[0] = kAckMsg;
+  switch (pid) {
+    case -2:  // Remote ack to client.
+      msg[1] = 1;
+      // Fall through.
+    case -1:  // Local ack to client.
+      msg[2] = sid;
+      itos(msg + 3, seq, 8);
+      dst_host = client_host_;
+      dst_port = client_port_;
+      len = 11;
+      break;
+    default:  // Ack to proxy.
+      msg[1] = sid;
+      itos(msg + 2, seq, 8);
+      dst_host = proxies_[pid].host;
+      dst_port = proxies_[pid].port;
+      len = 10;
+  }
+
+  int rc = tl_.async_send_message(dst_host, dst_port, msg, len,
+      true, release_chunk, msg);
+  if (rc) {
+    LOG(ERROR) << "send_ack_message: cannot talk to peer " << dst_host  << ":"
+        << dst_port << ". rc = " << rc;
+    release_chunk(msg);
+  }
+}
+
+void SprinklerNode::handle_ack_message(const uint8_t *data) {
+  if (role_) {
+    // A proxy has received an ack message from a remote proxy.
+    // Notify the client that the message is safe at a remote datacenter.
+    int64_t seq = stoi(data + 2, 8);
+    send_ack_message(-2, data[1], seq);
+  } else {
+    // This is the client, just log the message.
+    if (data[1] == 0) {
+      LOG(INFO) << "ACK_LOCAL " << static_cast<int>(data[2]) << " " << stoi(data + 3, 8);
+    } else {
+      LOG(INFO) << "ACK_REMOTE " << static_cast<int>(data[2]) << " " << stoi(data + 3, 8);
+    }
+  }
 }
 
 void SprinklerNode::release_chunk(void *chunk) {
   dfree(chunk);
 }
+
