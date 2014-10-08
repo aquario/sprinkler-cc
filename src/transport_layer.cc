@@ -319,7 +319,6 @@ int TransportLayer::recv_ready(SocketIter ss) {
       LOG(FATAL) << "malloc returns null when requesting "
           << size - 4 << " bytes.";
     }
-    CHECK_LE(offset + 4 + size, kMaxChunkSize);
     memmove(copy, ss->recv_buffer + offset + 4, size - 4);
     ss->deliver(copy, size - 4, release_chunk, copy);
     offset += size;

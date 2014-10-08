@@ -166,7 +166,6 @@ void SprinklerNode::deliver(const uint8_t *data, int size,
       forward_or_release(data, size, false, release, env);
       break;
     case kAckMsg:
-      debug_show_memory(data, 11, 1);
       if (!role_ || (ack_enabled_ && (role_ & kTail))) {
         handle_ack_message(data);
       }
