@@ -19,3 +19,6 @@
 *.exe
 *.out
 *.app
+
+# Mac metadata
+.DS_Store
