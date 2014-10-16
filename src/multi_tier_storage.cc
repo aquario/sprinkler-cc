@@ -610,7 +610,9 @@ void MultiTierStorage::run_gc(int thread_id) {
       LOG(INFO) << "GC started on stream " << sid
         << ": (" << membuf.begin_offset << ", " << gc_table_begin_offset
         << ", " << gc_table_end_offset << ") with " << gc_info.table.size()
-        << " distinct events in GC table.";
+        << " distinct events in GC table. Seq#: ["
+        << get_begin_seq(ptr + gc_tale_begin_offset)
+        << ", " << get_end_seq(ptr + prev_offset(gc_table_end_seq)) << ").";
 
       // Set up flags in MemBuffer marking an on-going GC activity.
       membuf.gc_begin_offset = membuf.begin_offset;
