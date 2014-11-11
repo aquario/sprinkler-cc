@@ -19,6 +19,17 @@ struct ChunkInfo {
   std::string filename;
   int64_t begin_seq;
   int64_t end_seq;
+  pthread_mutex_t *mutex_ptr;
+
+  ChunkInfo(std::string filename, int64_t begin_seq, int64_t end_seq)
+    : filename(filename), begin_seq(begin_seq), end_seq(end_seq) {
+    mutex_ptr =
+        static_cast<pthread_mutex_t *>(dcalloc(sizeof(pthread_mutex_t), 1));
+    int rc = pthread_mutex_init(mutex_ptr, NULL);
+    if (rc) {
+      LOG(ERROR) << "pthread_mutex_init failed with rc " << rc << ".";
+    }
+  }
 };
 
 // Stores events received by a Sprinkler node.  An in-memory buffer stores most
@@ -30,14 +41,17 @@ class MultiTierStorage {
   MultiTierStorage(int nproxies, int nstreams,
       int64_t mem_buf_size, int64_t disk_chunk_size, int64_t pub_delay,
       int gc_thread_count, int64_t min_gc_pass, int64_t max_gc_pass,
-      int64_t max_gc_table_size, int64_t max_gc_chunk_size)
-    : nstreams_(nstreams), mutex_(nstreams), pub_delay_(pub_delay),
+      int64_t max_gc_table_size, int64_t max_gc_chunk_size,
+      int gc_disk_thread_count)
+    : nstreams_(nstreams), mem_mutex_(nstreams), pub_delay_(pub_delay),
       next_chunk_no_(nstreams, 0), chunk_summary_(nstreams),
       max_gc_table_size_(max_gc_table_size),
       min_gc_pass_(min_gc_pass), max_gc_pass_(max_gc_pass),
       max_gc_chunk_size_(max_gc_chunk_size),
       gc_thread_count_(gc_thread_count),
-      gc_threads_(gc_thread_count), gc_hints_(gc_thread_count) {
+      gc_threads_(gc_thread_count), gc_hints_(gc_thread_count),
+      gc_disk_thread_count_(gc_disk_thread_count), meta_mutex_(nstreams),
+      bytes_saved_disk_(nstreams, 0) {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
     disk_chunk_size_ = disk_chunk_size;
@@ -49,7 +63,12 @@ class MultiTierStorage {
 
     // Initialize mutexes.
     for (int i = 0; i < nstreams; ++i) {
-      int rc = pthread_mutex_init(&mutex_[i], NULL);
+      int rc = pthread_mutex_init(&mem_mutex_[i], NULL);
+      if (rc) {
+        LOG(ERROR) << "pthread_mutex_init failed with rc " << rc << ".";
+      }
+
+      rc = pthread_mutex_init(&meta_mutex_[i], NULL);
       if (rc) {
         LOG(ERROR) << "pthread_mutex_init failed with rc " << rc << ".";
       }
@@ -155,6 +174,7 @@ class MultiTierStorage {
   struct GcHint {
     MultiTierStorage *ptr;
     int tid;
+    bool on_disk;
   };
 
   // Info about an on-going garbage collection on a stream.
@@ -213,7 +233,8 @@ class MultiTierStorage {
   void init_gc();
 
   // Entry point for a GC thread.  Every newly created GC thread starts from
-  // this static function, gets its context, and do work in run_gc.
+  // this static function, gets its context, and starts the main GC loop in
+  // either run_gc_in_memory or run_gc_on_disk.
   // This is a workaround of std::thread, in which std::bind could be used and
   // this function is no longer needed.  However, as of Sep 2014, std::thread
   // is still not working under g++ 4.8.x.
@@ -222,8 +243,15 @@ class MultiTierStorage {
   //  arg: a pointer to a GcHint struct.
   static void *start_gc(void *arg);
 
-  // This is where garbage collection work is done.
-  void run_gc(int thread_id);
+  // Main loop for in-memory garbage collection.
+  void run_gc_in_memory(int thread_id);
+
+  // Main loop for on-disk garbage collection.
+  void run_gc_on_disk(int thread_id);
+
+  // Merge adjacent tombstone events within a disk chunk.
+  // Returns the new chunk size after merging.
+  int64_t merge_tombstones(uint8_t *chunk, int64_t size);
 
   // #streams.
   int nstreams_;
@@ -235,7 +263,7 @@ class MultiTierStorage {
   // In-memory buffer for all streams.
   std::vector<MemBuffer> mem_store_;
   // Mutex for each stream.
-  std::vector<pthread_mutex_t> mutex_;
+  std::vector<pthread_mutex_t> mem_mutex_;
   // Buffer to batch publishing on a continuous stream.
   std::vector< std::vector<PublishBuffer> > publish_buffer_;
   // Timestamp of the addition of the most recently published event on a
@@ -266,7 +294,13 @@ class MultiTierStorage {
   // Next chunk# to assign for each stream stored on disk.
   std::vector<int64_t> next_chunk_no_;
   // Filenames and start/end seq# for streams stored on this node.
-  std::vector< std::deque<ChunkInfo> > chunk_summary_;
+  std::vector< std::deque<ChunkInfo*> > chunk_summary_;
+  // Mutex for chunk metadata of each stream.
+  std::vector<pthread_mutex_t> meta_mutex_;
+  // #GC threads on disk.
+  int64_t gc_disk_thread_count_;
+  // Bytes saved by on-disk GC.
+  std::vector<int64_t> bytes_saved_disk_;
 };
 
 #endif  // MULTI_TIER_STORAGE_H_

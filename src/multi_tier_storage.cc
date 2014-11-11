@@ -14,11 +14,28 @@ int64_t MultiTierStorage::mem_buf_size_;
 int64_t MultiTierStorage::disk_chunk_size_;
 
 void MultiTierStorage::init_gc() {
-  LOG(INFO) << "Initialize " << gc_thread_count_ << " GC threads ...";
+  LOG(INFO) << "Initialize " << gc_thread_count_ << " in-memory GC threads ...";
   if (gc_thread_count_ > 0) {
     for (int i = 0; i < gc_thread_count_; ++i) {
       gc_hints_[i].ptr = this;
       gc_hints_[i].tid = i;
+      gc_hints_[i].on_disk = false;
+      int rc = pthread_create(&gc_threads_[i], NULL,
+          &MultiTierStorage::start_gc, static_cast<void *>(&gc_hints_[i]));
+      if (rc) {
+        LOG(ERROR) << "pthread_create failed with rc " << rc << ".";
+      }
+    }
+  }
+
+  LOG(INFO) << "Initialize " << gc_disk_thread_count_
+      << " on-disk GC threads ...";
+  if (gc_disk_thread_count_ > 0) {
+    for (int i = gc_thread_count_; i < gc_thread_count_ + gc_disk_thread_count_;
+        ++i) {
+      gc_hints_[i].ptr = this;
+      gc_hints_[i].tid = i - gc_thread_count_;
+      gc_hints_[i].on_disk = true;
       int rc = pthread_create(&gc_threads_[i], NULL,
           &MultiTierStorage::start_gc, static_cast<void *>(&gc_hints_[i]));
       if (rc) {
@@ -104,7 +121,7 @@ int64_t MultiTierStorage::put_events(
   // Discard previous events if the first new event is a tombstone that overlaps
   // with previously received events.
   if (is_tombstone(data)) {
-    pthread_mutex_lock(&mutex_[sid]);
+    pthread_mutex_lock(&mem_mutex_[sid]);
     int64_t new_begin = get_begin_seq(data);
     if (membuf.begin_seq >= new_begin) {
       // Invalidate any on-going GC avtivity.
@@ -154,7 +171,7 @@ int64_t MultiTierStorage::put_events(
       membuf.end_offset = end_offset = fit_offset;
       membuf.end_seq = end_seq = get_begin_seq(data);
     }
-    pthread_mutex_unlock(&mutex_[sid]);
+    pthread_mutex_unlock(&mem_mutex_[sid]);
   }
 
   // Not enough space, flush something to disk.
@@ -226,17 +243,20 @@ int64_t MultiTierStorage::get_events(int pid, int sid, int64_t now,
     int64_t chunk_id = get_chunk_id_by_seq(sid, first_seq);
     // We know that this seq# is on disk for sure ...
     CHECK_NE(chunk_id, -1);
-    std::string filename = get_chunk_name(sid, chunk_id);
+    std::string filename = chunk_summary_[sid][chunk_id]->filename;
+
+    pthread_mutex_lock(chunk_summary_[sid][chunk_id]->mutex_ptr);
     FILE *fin = fopen(filename.c_str(), "r");
-    int64_t rc = fread(pubbuf.buffer, disk_chunk_size_, 1, fin);
-    CHECK_EQ(rc, 1);
+    int64_t rc =
+        fread(pubbuf.buffer, kEventLen, disk_chunk_size_ / kEventLen, fin);
     fclose(fin);
+    pthread_mutex_unlock(chunk_summary_[sid][chunk_id]->mutex_ptr);
 
     VLOG(kLogLevel) << "Loaded chunk " << chunk_id << " into publish buffer.";
 
     pubbuf.offset = adjust_offset_linear(
-        first_seq, disk_chunk_size_ / kEventLen, pubbuf.buffer);
-    pubbuf.remainder = disk_chunk_size_ - pubbuf.offset;
+        first_seq, rc, pubbuf.buffer);
+    pubbuf.remainder = rc * kEventLen - pubbuf.offset;
 
     int64_t nevents = pubbuf.remainder / kEventLen;
     if (nevents > max_events) {
@@ -263,7 +283,7 @@ int64_t MultiTierStorage::get_events(int pid, int sid, int64_t now,
       return kErrDelay;
     }
 
-    pthread_mutex_lock(&mutex_[sid]);
+    pthread_mutex_lock(&mem_mutex_[sid]);
     // First, determine the memory range needs to copy.
     int64_t begin_offset = adjust_offset_circular(first_seq,
         membuf.begin_offset, membuf.end_offset,
@@ -299,7 +319,7 @@ int64_t MultiTierStorage::get_events(int pid, int sid, int64_t now,
 
     // Unlock the mutex.  No further code in this method touches the in-memory
     // buffer anymore.
-    pthread_mutex_unlock(&mutex_[sid]);
+    pthread_mutex_unlock(&mem_mutex_[sid]);
 
     // Update the timestamp.
     if (now != -1) {
@@ -335,14 +355,15 @@ void MultiTierStorage::report_state(int sid) {
   LOG(INFO) << "STATS: stream " << sid << " "
       << mem_store_[sid].end_seq - 1 << " "
       << mem_store_[sid].bytes_wrote << " "
-      << mem_store_[sid].bytes_saved << " ["
+      << mem_store_[sid].bytes_saved << " "
+      << bytes_saved_disk_[sid] << " ["
       << mem_store_[sid].begin_offset << ", "
       << mem_store_[sid].end_offset << ")";
 }
 
 void MultiTierStorage::grab_all_locks() {
   for (int i = 0; i < nstreams_; ++i) {
-    pthread_mutex_lock(&mutex_[i]);
+    pthread_mutex_lock(&mem_mutex_[i]);
   }
 }
 
@@ -458,26 +479,30 @@ int64_t MultiTierStorage::adjust_offset_circular(int64_t seq,
 }
 
 int MultiTierStorage::get_chunk_id_by_seq(int sid, int64_t seq) {
+  pthread_mutex_lock(&meta_mutex_[sid]);
   int lo = 0;
   int hi = chunk_summary_[sid].size() - 1;
+  int result = -1;
 
   while (lo <= hi) {
     int mid = (lo + hi) >> 1;
-    if (chunk_summary_[sid][mid].begin_seq <= seq &&
-        seq < chunk_summary_[sid][mid].end_seq) {
-      return mid;
+    if (chunk_summary_[sid][mid]->begin_seq <= seq &&
+        seq < chunk_summary_[sid][mid]->end_seq) {
+      result = mid;
+      break;
     }
-    if (chunk_summary_[sid][mid].begin_seq > seq) {
+    if (chunk_summary_[sid][mid]->begin_seq > seq) {
       hi = mid - 1;
-    } else if (chunk_summary_[sid][mid].end_seq <= seq) {
+    } else if (chunk_summary_[sid][mid]->end_seq <= seq) {
       lo = mid + 1;
     }
   }
-  return -1;
+  pthread_mutex_unlock(&meta_mutex_[sid]);
+  return result;
 }
 
 void MultiTierStorage::flush_to_disk(int sid) {
-  pthread_mutex_lock(&mutex_[sid]);
+  pthread_mutex_lock(&mem_mutex_[sid]);
 
   MemBuffer &membuf = mem_store_[sid];
 
@@ -491,28 +516,29 @@ void MultiTierStorage::flush_to_disk(int sid) {
       << ", " << end_offset << ")";
 
   uint8_t *ptr = membuf.chunk;
-  int unit_size = sizeof(uint8_t);
 
   std::string filename = get_chunk_name(sid, next_chunk_no_[sid]);
 
-  ChunkInfo chunk_info;
-  chunk_info.filename = filename;
-  chunk_info.begin_seq = membuf.begin_seq;
-  chunk_info.end_seq = get_end_seq(ptr + prev_offset(end_offset));
-  chunk_summary_[sid].push_back(chunk_info);
-  ++next_chunk_no_[sid];
-
+  // Write the chunk to disk.
   FILE *fout = fopen(filename.c_str(), "wb");
   if (begin_offset < end_offset) {
     // No carry-over, a single write is sufficient.
-    fwrite(ptr + begin_offset, unit_size, disk_chunk_size_, fout);
+    fwrite(ptr + begin_offset, 1, disk_chunk_size_, fout);
   } else {
     // Two writes.
-    fwrite(ptr + begin_offset, unit_size, mem_buf_size_ - begin_offset, fout);
-    fwrite(ptr, unit_size,
-        disk_chunk_size_ - (mem_buf_size_ - begin_offset), fout);
+    fwrite(ptr + begin_offset, 1, mem_buf_size_ - begin_offset, fout);
+    fwrite(ptr, 1, disk_chunk_size_ - (mem_buf_size_ - begin_offset), fout);
   }
   fclose(fout);
+
+  // Update chunk metadata.
+  ChunkInfo *chunk_info = new ChunkInfo(filename, membuf.begin_seq,
+      get_end_seq(ptr + prev_offset(end_offset)));
+
+  pthread_mutex_lock(&meta_mutex_[sid]);
+  chunk_summary_[sid].push_back(chunk_info);
+  ++next_chunk_no_[sid];
+  pthread_mutex_unlock(&meta_mutex_[sid]);
 
   // Update new begin_{seq, offset}.
   membuf.begin_seq = get_begin_seq(ptr + end_offset);
@@ -531,7 +557,7 @@ void MultiTierStorage::flush_to_disk(int sid) {
       << " gc_begin_offset " << membuf.gc_begin_offset
       << " gc_table_begin_offset " << membuf.gc_table_begin_offset;
 
-  pthread_mutex_unlock(&mutex_[sid]);
+  pthread_mutex_unlock(&mem_mutex_[sid]);
 }
 
 std::string MultiTierStorage::get_chunk_name(int sid, int64_t chunk_id) {
@@ -542,12 +568,18 @@ void *MultiTierStorage::start_gc(void *arg) {
   GcHint *hint_t = static_cast<GcHint *>(arg);
   MultiTierStorage *storage_t = hint_t->ptr;
   int tid = hint_t->tid;
+  bool on_disk = hint_t->on_disk;
 
-  storage_t->run_gc(tid);
+  if (on_disk) {
+    storage_t->run_gc_on_disk(tid);
+  } else {
+    storage_t->run_gc_in_memory(tid);
+  }
 }
 
-void MultiTierStorage::run_gc(int thread_id) {
-  VLOG(kLogLevel) << "Garbage collection thread #" << thread_id << " started.";
+void MultiTierStorage::run_gc_in_memory(int thread_id) {
+  LOG(INFO) << "In-memory garbage collection thread #" << thread_id
+      << " started.";
 
   std::vector<int> my_streams;
   std::unordered_map<int, GcInfo> metadata;
@@ -569,7 +601,7 @@ void MultiTierStorage::run_gc(int thread_id) {
     // Skip GC if there are too few events.
     if (get_used_space(membuf) >= min_gc_pass_) {
       // Perform GC with mutex.
-      pthread_mutex_lock(&mutex_[sid]);
+      pthread_mutex_lock(&mem_mutex_[sid]);
 
       // Construct GC table.
       // Here we assume that flush_to_disk will never interfere with GC table
@@ -611,8 +643,8 @@ void MultiTierStorage::run_gc(int thread_id) {
         << ": (" << membuf.begin_offset << ", " << gc_table_begin_offset
         << ", " << gc_table_end_offset << ") with " << gc_info.table.size()
         << " distinct events in GC table. Seq#: ["
-        << get_begin_seq(ptr + gc_tale_begin_offset)
-        << ", " << get_end_seq(ptr + prev_offset(gc_table_end_seq)) << ").";
+        << get_begin_seq(ptr + gc_table_begin_offset)
+        << ", " << get_end_seq(ptr + prev_offset(gc_table_end_offset)) << ").";
 
       // Set up flags in MemBuffer marking an on-going GC activity.
       membuf.gc_begin_offset = membuf.begin_offset;
@@ -777,7 +809,7 @@ void MultiTierStorage::run_gc(int thread_id) {
 
         // Release the lock so that other threads get a chance to enter.
         VLOG(kLogLevel) << "GC: yield.";
-        pthread_mutex_unlock(&mutex_[sid]);
+        pthread_mutex_unlock(&mem_mutex_[sid]);
 
         timespec time_for_sleep;
         time_for_sleep.tv_sec = 0;
@@ -790,7 +822,7 @@ void MultiTierStorage::run_gc(int thread_id) {
         }
 
         // Re-aquire the lock before proceeding to another area.
-        pthread_mutex_lock(&mutex_[sid]);
+        pthread_mutex_lock(&mem_mutex_[sid]);
         VLOG(kLogLevel) << "GC: I'm back.";
 
         // If the GC table area is corrupted, abort this GC pass.
@@ -815,12 +847,184 @@ void MultiTierStorage::run_gc(int thread_id) {
 
       report_state(sid);
 
-      pthread_mutex_unlock(&mutex_[sid]);
+      pthread_mutex_unlock(&mem_mutex_[sid]);
     }
 
     if (++stream_idx == my_streams.size()) {
       stream_idx = 0;
-      // TODO(haoyan): sleep for a while?
     }
   }
+}
+
+void MultiTierStorage::run_gc_on_disk(int thread_id) {
+  LOG(INFO) << "On-disk garbage collection thread #" << thread_id
+      << " started.";
+
+  // ID of streams this thread will garbage collect.
+  std::vector<int> my_streams;
+  // Offset of the last chunk being used for on-disk GC.
+  std::vector<int64_t> last_chunk;
+  // Chunk buffer.
+  uint8_t *chunk = static_cast<uint8_t *>(dcalloc(disk_chunk_size_, 1));
+  int64_t chunk_size = 0, new_chunk_size = 0;
+  // Hashtable of GC events.
+  std::unordered_set<int64_t> table;
+  // Is the content of a chunk changed?
+  bool has_changed = false;
+
+  // First, determine which streams am I responsible for.
+  for (int i = thread_id; i < nstreams_; i += gc_thread_count_) {
+    my_streams.push_back(i);
+    last_chunk.push_back(0);
+  }
+
+  // Round robin across these streams.
+  int stream_idx = 0;
+  while (true) {
+    int sid = my_streams[stream_idx];
+
+    if (last_chunk[sid] >= next_chunk_no_[sid]) {
+      timespec time_for_sleep;
+      time_for_sleep.tv_sec = 0;
+      time_for_sleep.tv_nsec = 100000000;  // 0.1 sec.
+
+      int rc = 0;
+      if (rc = nanosleep(&time_for_sleep, NULL) < 0) {
+        LOG(ERROR) << "nanosleep() failed on thread " << thread_id
+          << " with rc " << rc << ".";
+      }
+
+      continue;
+    }
+
+    LOG(INFO) << "On-disk GC started for stream " << sid
+        << " up to chunk index " << last_chunk[sid];
+
+    ChunkInfo *cur_chunk = chunk_summary_[sid][last_chunk[sid]];
+
+    // First, garbage collection within the last chunk and construct the
+    // GC table.
+    std::string filename = cur_chunk->filename;
+    FILE *fin = fopen(filename.c_str(), "r");
+    chunk_size =
+      fread(chunk, kEventLen, disk_chunk_size_ / kEventLen, fin) * kEventLen;
+    fclose(fin);
+
+    table.clear();
+    CHECK_GT(chunk_size, 0);
+    has_changed = false;
+    for (int64_t i = chunk_size - kEventLen; i >= 0; i -= kEventLen) {
+      if (is_tombstone(chunk + i)) {
+       continue;
+      }
+
+      int64_t key = get_object_id(chunk + i);
+      if (table.count(key) == 1) {
+        to_tombstone(chunk + i);
+        has_changed = true;
+      } else {
+        table.insert(key);
+      }
+    }
+
+    new_chunk_size = merge_tombstones(chunk, chunk_size);
+    if (new_chunk_size != chunk_size) {
+      has_changed = true;
+      bytes_saved_disk_[sid] += chunk_size - new_chunk_size;
+    }
+
+    if (has_changed) {
+      pthread_mutex_lock(cur_chunk->mutex_ptr);
+      FILE *fout = fopen(filename.c_str(), "w");
+      fwrite(chunk, new_chunk_size, 1, fout);
+      fclose(fout);
+      pthread_mutex_unlock(cur_chunk->mutex_ptr);
+    }
+
+    if (new_chunk_size != chunk_size) {
+      LOG(INFO) << "On-disk GC happened in " << filename
+          << " saving " << chunk_size - new_chunk_size << " bytes.";
+    } else {
+      LOG(INFO) << "On-disk GC: nothing saved in " << filename;
+    }
+
+    // Then, garbage collect previous chunks.
+    int64_t starting_chunk = last_chunk[sid] > 256 ? last_chunk[sid] - 256 : 0;
+//    int64_t starting_chunk = 0;
+//    int64_t starting_chunk = last_chunk[sid];
+    for (int64_t i = starting_chunk; i < last_chunk[sid]; ++i) {
+      cur_chunk = chunk_summary_[sid][i];
+
+      std::string filename = cur_chunk->filename;
+      FILE *fin = fopen(filename.c_str(), "r");
+      chunk_size =
+        fread(chunk, kEventLen, disk_chunk_size_ / kEventLen, fin) * kEventLen;
+      fclose(fin);
+
+      has_changed = false;
+      for (int64_t offset = 0; offset < chunk_size; offset += kEventLen) {
+        if (is_data_event(chunk + offset) &&
+            table.count(get_object_id(chunk + offset)) == 1) {
+          to_tombstone(chunk + offset);
+          has_changed = true;
+        }
+      }
+
+      new_chunk_size = merge_tombstones(chunk, chunk_size);
+      if (new_chunk_size != chunk_size) {
+        has_changed = true;
+        bytes_saved_disk_[sid] += chunk_size - new_chunk_size;
+      }
+
+      if (has_changed) {
+        pthread_mutex_lock(cur_chunk->mutex_ptr);
+        FILE *fout = fopen(filename.c_str(), "w");
+        fwrite(chunk, new_chunk_size, 1, fout);
+        fclose(fout);
+        pthread_mutex_unlock(cur_chunk->mutex_ptr);
+      }
+
+      if (new_chunk_size != chunk_size) {
+        LOG(INFO) << "On-disk GC happened in " << filename
+          << " saving " << chunk_size - new_chunk_size << " bytes.";
+      } else {
+        LOG(INFO) << "On-disk GC: nothing saved in " << filename;
+      }
+    }
+
+    ++last_chunk[sid];
+
+    if (++stream_idx == my_streams.size()) {
+      stream_idx = 0;
+    }
+  }
+}
+
+int64_t MultiTierStorage::merge_tombstones(uint8_t *chunk, int64_t size) {
+  int64_t i = 0, j = 0;
+  while (j < size) {
+    if (is_tombstone(chunk + j)) {
+      int64_t k = j;
+      while (k < size && is_tombstone(chunk + k)) {
+        k += kEventLen;
+      }
+
+      if (k != j) {
+        memmove(chunk + j + 9, chunk + k - kEventLen + 9, 8);
+      }
+
+      if (i != j) {
+        memmove(chunk + i, chunk + j, kEventLen);
+      }
+      j = k;
+    } else {
+      if (i != j) {
+        memmove(chunk + i, chunk + j, kEventLen);
+      }
+      j += kEventLen;
+    }
+    i += kEventLen;
+  }
+
+  return i;
 }

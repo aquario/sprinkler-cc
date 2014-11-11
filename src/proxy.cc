@@ -31,6 +31,8 @@ DEFINE_int64(min_gc_pass, 65536,
     "Min bytes in a stream to trigger GC, 64 KB by default.");
 DEFINE_int64(max_gc_pass, static_cast<int64_t>(1) << 31,
     "Max bytes a GC pass will touch, 2 GB by default.");
+DEFINE_int32(gc_disk_thread_count, 0,
+    "Number of on-disk garbage collection threads.");
 DEFINE_int64(duration, 0,
     "Lifetime of the proxy in seconds, 0 means infinite.");
 DEFINE_bool(ack_enabled, false,
@@ -119,6 +121,8 @@ int main(int argc, char **argv) {
       << "Max bytes a GC pass will touch: " << FLAGS_max_gc_pass << ".\n"
       << "Max GC table size: " << FLAGS_max_gc_table_size << " events.\n"
       << "Max GC chunk size: " << FLAGS_max_gc_chunk_size << " bytes.\n"
+      << "Number of on-disk GC threads: "
+      << FLAGS_gc_disk_thread_count << ".\n"
       << "Ack enabled: " << FLAGS_ack_enabled << "\n"
       << "Client host: " << FLAGS_client_host << "\n"
       << "Client port: " << FLAGS_client_port << "\n";
@@ -129,7 +133,8 @@ int main(int argc, char **argv) {
       nstreams, local_streams, mem_buf_size, FLAGS_disk_chunk_size,
       FLAGS_pub_delay,
       FLAGS_gc_thread_count, FLAGS_min_gc_pass, FLAGS_max_gc_pass,
-      FLAGS_max_gc_table_size, FLAGS_max_gc_chunk_size);
+      FLAGS_max_gc_table_size, FLAGS_max_gc_chunk_size,
+      FLAGS_gc_disk_thread_count);
   node.start_proxy(FLAGS_duration);
 
   return 0;
