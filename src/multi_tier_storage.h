@@ -42,16 +42,17 @@ class MultiTierStorage {
       int64_t mem_buf_size, int64_t disk_chunk_size, int64_t pub_delay,
       int gc_thread_count, int64_t min_gc_pass, int64_t max_gc_pass,
       int64_t max_gc_table_size, int64_t max_gc_chunk_size,
-      int gc_disk_thread_count)
+      int gc_disk_thread_count, bool use_erasure_code)
     : nstreams_(nstreams), mem_mutex_(nstreams), pub_delay_(pub_delay),
       next_chunk_no_(nstreams, 0), chunk_summary_(nstreams),
       max_gc_table_size_(max_gc_table_size),
       min_gc_pass_(min_gc_pass), max_gc_pass_(max_gc_pass),
       max_gc_chunk_size_(max_gc_chunk_size),
       gc_thread_count_(gc_thread_count),
-      gc_threads_(gc_thread_count), gc_hints_(gc_thread_count),
+      gc_threads_(gc_thread_count),
+      gc_hints_(gc_thread_count + gc_disk_thread_count + 1),
       gc_disk_thread_count_(gc_disk_thread_count), meta_mutex_(nstreams),
-      bytes_saved_disk_(nstreams, 0) {
+      bytes_saved_disk_(nstreams, 0), use_erasure_code_(use_erasure_code) {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
     disk_chunk_size_ = disk_chunk_size;

@@ -14,8 +14,12 @@ int64_t MultiTierStorage::mem_buf_size_;
 int64_t MultiTierStorage::disk_chunk_size_;
 
 void MultiTierStorage::init_gc() {
-  LOG(INFO) << "Initialize " << gc_thread_count_ << " in-memory GC threads ...";
+  // Make sure on-disk gc and use of erasure code are mutual exclusive.
+  CHECK(gc_disk_thread_count_ == 0 || !use_erasure_code_);
+
   if (gc_thread_count_ > 0) {
+    LOG(INFO) << "Initialize " << gc_thread_count_
+        << " in-memory GC threads ...";
     for (int i = 0; i < gc_thread_count_; ++i) {
       gc_hints_[i].ptr = this;
       gc_hints_[i].tid = i;
@@ -28,9 +32,9 @@ void MultiTierStorage::init_gc() {
     }
   }
 
-  LOG(INFO) << "Initialize " << gc_disk_thread_count_
-      << " on-disk GC threads ...";
   if (gc_disk_thread_count_ > 0) {
+    LOG(INFO) << "Initialize " << gc_disk_thread_count_
+        << " on-disk GC threads ...";
     for (int i = gc_thread_count_; i < gc_thread_count_ + gc_disk_thread_count_;
         ++i) {
       gc_hints_[i].ptr = this;
@@ -41,6 +45,18 @@ void MultiTierStorage::init_gc() {
       if (rc) {
         LOG(ERROR) << "pthread_create failed with rc " << rc << ".";
       }
+    }
+  }
+
+  if (use_erasure_code_) {
+    LOG(INFO) << "Initialize erasure code.";
+    int i = gc_thread_count_;
+    gc_hints_[i].ptr = this;
+    gc_hints_[i].tid = -1;
+    int rc = pthread_create(&gc_threads_[i], NULL,
+        &MultiTierStorage::start_gc, static_cast<void *>(&gc_hints_[i]));
+    if (rc) {
+      LOG(ERROR) << "pthread_create failed with rc " << rc << ".";
     }
   }
 }
@@ -557,6 +573,9 @@ void MultiTierStorage::flush_to_disk(int sid) {
       << " gc_begin_offset " << membuf.gc_begin_offset
       << " gc_table_begin_offset " << membuf.gc_table_begin_offset;
 
+  // TODO(haoyan): update the flush counter and send a message to head (if I'm
+  // not the head node).
+
   pthread_mutex_unlock(&mem_mutex_[sid]);
 }
 
@@ -570,7 +589,10 @@ void *MultiTierStorage::start_gc(void *arg) {
   int tid = hint_t->tid;
   bool on_disk = hint_t->on_disk;
 
-  if (on_disk) {
+  if (tid == -1) {
+    // Erasure coding.
+    storage_t->run_erasure_encoder();
+  } if (on_disk) {
     storage_t->run_gc_on_disk(tid);
   } else {
     storage_t->run_gc_in_memory(tid);
@@ -1027,4 +1049,12 @@ int64_t MultiTierStorage::merge_tombstones(uint8_t *chunk, int64_t size) {
   }
 
   return i;
+}
+
+void MultiTierStorage::run_erasure_encoder() {
+  // TODO(haoyan): If I am not the head, do nothing;
+  // otherwise, do something like this ...
+  //   while (true) ...
+  //     if erasure-coded watermark is lower than flush count, chop up the next
+  //     chunk and send stuff to other local nodes, according to (k, n).
 }

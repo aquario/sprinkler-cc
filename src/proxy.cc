@@ -33,6 +33,7 @@ DEFINE_int64(max_gc_pass, static_cast<int64_t>(1) << 31,
     "Max bytes a GC pass will touch, 2 GB by default.");
 DEFINE_int32(gc_disk_thread_count, 0,
     "Number of on-disk garbage collection threads.");
+DEFINE_bool(use_erasure_code, false, "Use erasure code to store old events.");
 DEFINE_int64(duration, 0,
     "Lifetime of the proxy in seconds, 0 means infinite.");
 DEFINE_bool(ack_enabled, false,
@@ -134,7 +135,7 @@ int main(int argc, char **argv) {
       FLAGS_pub_delay,
       FLAGS_gc_thread_count, FLAGS_min_gc_pass, FLAGS_max_gc_pass,
       FLAGS_max_gc_table_size, FLAGS_max_gc_chunk_size,
-      FLAGS_gc_disk_thread_count);
+      FLAGS_gc_disk_thread_count, FLAGS_use_erasure_code);
   node.start_proxy(FLAGS_duration);
 
   return 0;
