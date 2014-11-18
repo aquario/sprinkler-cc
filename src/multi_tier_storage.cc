@@ -1,5 +1,6 @@
 #include "multi_tier_storage.h"
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <string.h>
 
@@ -15,7 +16,7 @@ int64_t MultiTierStorage::disk_chunk_size_;
 
 void MultiTierStorage::init_gc() {
   // Make sure on-disk gc and use of erasure code are mutual exclusive.
-  CHECK(gc_disk_thread_count_ == 0 || !use_erasure_code_);
+  CHECK(gc_disk_thread_count_ == 0 || fragments_ == 0);
 
   if (gc_thread_count_ > 0) {
     LOG(INFO) << "Initialize " << gc_thread_count_
@@ -48,7 +49,7 @@ void MultiTierStorage::init_gc() {
     }
   }
 
-  if (use_erasure_code_) {
+  if (fragments_ != 0) {
     LOG(INFO) << "Initialize erasure code.";
     int i = gc_thread_count_;
     gc_hints_[i].ptr = this;
@@ -58,6 +59,9 @@ void MultiTierStorage::init_gc() {
     if (rc) {
       LOG(ERROR) << "pthread_create failed with rc " << rc << ".";
     }
+
+    chunk_sem_ = sem_open("chunk_sem", O_CREAT, 0, 3);
+    ec_watermark_ = 0;
   }
 }
 
@@ -536,7 +540,7 @@ void MultiTierStorage::flush_to_disk(int sid) {
   std::string filename = get_chunk_name(sid, next_chunk_no_[sid]);
 
   // Write the chunk to disk.
-  FILE *fout = fopen(filename.c_str(), "wb");
+  FILE *fout = fopen(filename.c_str(), "w");
   if (begin_offset < end_offset) {
     // No carry-over, a single write is sufficient.
     fwrite(ptr + begin_offset, 1, disk_chunk_size_, fout);
@@ -572,10 +576,11 @@ void MultiTierStorage::flush_to_disk(int sid) {
   VLOG(kLogLevel) << "New begin_offset: " << membuf.begin_offset
       << " gc_begin_offset " << membuf.gc_begin_offset
       << " gc_table_begin_offset " << membuf.gc_table_begin_offset;
-
-  // TODO(haoyan): update the flush counter and send a message to head (if I'm
-  // not the head node).
-
+/*
+  if (fragments_ > 0) {
+    sem_post(chunk_sem_);
+  }
+*/
   pthread_mutex_unlock(&mem_mutex_[sid]);
 }
 
@@ -971,8 +976,8 @@ void MultiTierStorage::run_gc_on_disk(int thread_id) {
     }
 
     // Then, garbage collect previous chunks.
-    int64_t starting_chunk = last_chunk[sid] > 256 ? last_chunk[sid] - 256 : 0;
-//    int64_t starting_chunk = 0;
+    int64_t starting_chunk = last_chunk[sid] > 45 ? last_chunk[sid] - 45 : 0;
+//    int64_t starting_chunk = 02
 //    int64_t starting_chunk = last_chunk[sid];
     for (int64_t i = starting_chunk; i < last_chunk[sid]; ++i) {
       cur_chunk = chunk_summary_[sid][i];
@@ -1052,9 +1057,65 @@ int64_t MultiTierStorage::merge_tombstones(uint8_t *chunk, int64_t size) {
 }
 
 void MultiTierStorage::run_erasure_encoder() {
-  // TODO(haoyan): If I am not the head, do nothing;
-  // otherwise, do something like this ...
-  //   while (true) ...
-  //     if erasure-coded watermark is lower than flush count, chop up the next
-  //     chunk and send stuff to other local nodes, according to (k, n).
+  LOG(INFO) << "Erasure encoder thread started.";
+  uint8_t *ec_buffer = static_cast<uint8_t *>(dcalloc(1048576, 16));
+  LOG(INFO) << "miaow";
+  while (true) {
+//    sem_wait(chunk_sem_);
+    if (ec_watermark_ >= next_chunk_no_[0]) {
+      pthread_yield();
+      continue;
+    }
+    LOG(INFO) << "encode " + std::to_string(ec_watermark_);
+//    std::string input_file = get_chunk_name(0, ec_watermark_);
+    LOG(INFO) << "get_chunk_name " << 0 << " " << ec_watermark_;
+    std::string input_file = "chunk-0-" + std::to_string(ec_watermark_);
+    LOG(INFO) << "encoding " << input_file;
+
+//    pthread_mutex_lock(chunk_summary_[0][ec_watermark_]->mutex_ptr);
+    LOG(INFO) << "1";
+    FILE *fin = fopen(input_file.c_str(), "r");
+    LOG(INFO) << "2 " << (fin == NULL);
+    int64_t chunk_size =
+        fread(ec_buffer, kEventLen, disk_chunk_size_ / kEventLen, fin);
+    LOG(INFO) << "3 " << chunk_size;
+    fclose(fin);
+    sleep(1);
+//    pthread_mutex_unlock(chunk_summary_[0][ec_watermark_]->mutex_ptr);
+
+    chunk_size *= kEventLen;
+
+    if (fragments_ > 0) {
+      int64_t fragment_size = chunk_size % fragments_ == 0 ? 0 : 1;
+      fragment_size += chunk_size / fragments_;
+
+      for (int i = 0; i < fragments_; ++i) {
+        std::string output_file = input_file + "-" + std::to_string(i);
+        FILE *fout = fopen(output_file.c_str(), "wb");
+        fwrite(ec_buffer + i * fragment_size, 1, fragment_size, fout);
+        fclose(fout);
+      }
+    } else {
+      int64_t fragment_size = chunk_size / 2;
+      for (int i = 0; i < 2; ++i) {
+        std::string output_file = input_file + "-" + std::to_string(i);
+        FILE *fout = fopen(output_file.c_str(), "wb");
+        fwrite(ec_buffer + i * fragment_size, 1, fragment_size, fout);
+        fclose(fout);
+      }
+
+      for (int64_t i = 0; i < fragment_size; ++i) {
+        ec_buffer[i] ^= ec_buffer[i + fragment_size];
+      }
+      std::string output_file = input_file + "-2";
+      FILE *fout = fopen(output_file.c_str(), "wb");
+      fwrite(ec_buffer, 1, fragment_size, fout);
+      fclose(fout);
+    }
+
+//    pthread_mutex_lock(chunk_summary_[0][ec_watermark_]->mutex_ptr);
+    ++ec_watermark_;
+    remove(input_file.c_str());
+//    pthread_mutex_unlock(chunk_summary_[0][ec_watermark_]->mutex_ptr);
+  }
 }

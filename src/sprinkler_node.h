@@ -59,7 +59,7 @@ class SprinklerNode {
       int64_t pub_delay,
       int gc_thread_count, int64_t min_events_to_gc,
       int64_t max_gc_table_size, int64_t max_gc_pass, int64_t max_gc_chunk_size,
-      int gc_disk_thread_count, bool use_erasure_code)
+      int gc_disk_thread_count, int fragments)
     : id_(id), role_(role),
       ack_enabled_(ack_enabled),
       client_host_(client_host), client_port_(client_port),
@@ -75,7 +75,7 @@ class SprinklerNode {
       storage_(nproxies, nstreams, mem_buf_size, disk_chunk_size, pub_delay,
           gc_thread_count, min_events_to_gc,
           max_gc_table_size, max_gc_pass, max_gc_chunk_size,
-          gc_disk_thread_count, use_erasure_code),
+          gc_disk_thread_count, fragments),
       time_to_adv_(0), time_to_pub_(0) {}
 
   // Constructor for client.

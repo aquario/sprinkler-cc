@@ -2,6 +2,7 @@
 #define MULTI_TIER_STORAGE_H_
 
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdint.h>
 
 #include <deque>
@@ -42,7 +43,7 @@ class MultiTierStorage {
       int64_t mem_buf_size, int64_t disk_chunk_size, int64_t pub_delay,
       int gc_thread_count, int64_t min_gc_pass, int64_t max_gc_pass,
       int64_t max_gc_table_size, int64_t max_gc_chunk_size,
-      int gc_disk_thread_count, bool use_erasure_code)
+      int gc_disk_thread_count, int fragments)
     : nstreams_(nstreams), mem_mutex_(nstreams), pub_delay_(pub_delay),
       next_chunk_no_(nstreams, 0), chunk_summary_(nstreams),
       max_gc_table_size_(max_gc_table_size),
@@ -52,7 +53,7 @@ class MultiTierStorage {
       gc_threads_(gc_thread_count),
       gc_hints_(gc_thread_count + gc_disk_thread_count + 1),
       gc_disk_thread_count_(gc_disk_thread_count), meta_mutex_(nstreams),
-      bytes_saved_disk_(nstreams, 0), use_erasure_code_(use_erasure_code) {
+      bytes_saved_disk_(nstreams, 0), fragments_(fragments) {
     // Set buffer/chunk sizes here since they are static.
     mem_buf_size_ = mem_buf_size;
     disk_chunk_size_ = disk_chunk_size;
@@ -254,6 +255,9 @@ class MultiTierStorage {
   // Returns the new chunk size after merging.
   int64_t merge_tombstones(uint8_t *chunk, int64_t size);
 
+  // Entry point for erasure encoder.
+  void run_erasure_encoder();
+
   // #streams.
   int nstreams_;
   // Mapping from stream id to array index for permanent storage.
@@ -302,6 +306,13 @@ class MultiTierStorage {
   int64_t gc_disk_thread_count_;
   // Bytes saved by on-disk GC.
   std::vector<int64_t> bytes_saved_disk_;
+
+  // Number of fragments per chunk; 0 means not using erasure code.
+  int fragments_;
+  // Semaphore that indicates how many chunks are waiting to be encoded.
+  sem_t *chunk_sem_;
+  // Next chunk to be erasure coded.
+  int64_t ec_watermark_;
 };
 
 #endif  // MULTI_TIER_STORAGE_H_
